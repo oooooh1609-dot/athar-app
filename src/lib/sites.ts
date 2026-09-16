@@ -132,3 +132,149 @@ export function toCsv(projects: AtharProject[]): string {
   const cell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
   return rows.map((r) => r.map(cell).join(",")).join("\n");
 }
+
+export interface HeritageSiteMetadata {
+  id: string;
+  name: string;
+  region: "العلا" | "حائل" | "نجران" | "الجوف" | "الرياض" | "المدينة المنورة";
+  period: string;
+  lat: number;
+  lon: number;
+  tags: string[];
+  radiusMeters: number;
+}
+
+export class OfflineSpatialSitesEngine {
+  // قاعدة المواقع الميدانية المدمجة دون اتصال
+  private static SITES_DB: HeritageSiteMetadata[] = [
+    {
+      id: "site_01",
+      name: "جبل عكمة (المكتبة المفتوحة)",
+      region: "العلا",
+      period: "المملكة اللحيانية ودادان (القرن 6 ق.م)",
+      lat: 26.654,
+      lon: 37.912,
+      tags: ["داداني", "لحياني", "نذور"],
+      radiusMeters: 800,
+    },
+    {
+      id: "site_02",
+      name: "الشويمس (رايات ونقوش)",
+      region: "حائل",
+      period: "العصر الحجري الحديث",
+      lat: 26.042,
+      lon: 40.565,
+      tags: ["رسوم صخرية", "حيوانات منقرضة"],
+      radiusMeters: 1500,
+    },
+    {
+      id: "site_03",
+      name: "جبة (أم سنمان)",
+      region: "حائل",
+      period: "الألف الثامن ق.م وثمودي",
+      lat: 28.021,
+      lon: 40.932,
+      tags: ["ثمودي", "وعول", "جمال"],
+      radiusMeters: 2000,
+    },
+    {
+      id: "site_04",
+      name: "بئر حما التراثي",
+      region: "نجران",
+      period: "مسند جنوبي وثمودي وقوافل",
+      lat: 17.842,
+      lon: 44.471,
+      tags: ["مسند", "قوافل", "فرسان"],
+      radiusMeters: 3000,
+    },
+    {
+      id: "site_05",
+      name: "قرية الفاو الأثرية",
+      region: "الرياض",
+      period: "مملكة كندة الأولى",
+      lat: 19.783,
+      lon: 45.152,
+      tags: ["سبئي", "خط معيني", "معابد"],
+      radiusMeters: 2500,
+    },
+    {
+      id: "site_06",
+      name: "دومة الجندل ومارد",
+      region: "الجوف",
+      period: "أدوماتو والعهد النبطي",
+      lat: 29.811,
+      lon: 39.866,
+      tags: ["نبطي", "آشوري"],
+      radiusMeters: 1200,
+    },
+    {
+      id: "site_07",
+      name: "الحِجر (مدائن صالح)",
+      region: "العلا",
+      period: "الأنباط",
+      lat: 26.801,
+      lon: 37.954,
+      tags: ["مقابر", "واجهات نبطية"],
+      radiusMeters: 4000,
+    },
+  ];
+
+  /**
+   * البحث عن أقرب المواقع الأثرية لإحداثيات الباحث الحالية
+   */
+  public static findNearestSites(
+    currentLat: number,
+    currentLon: number,
+    limit = 5,
+  ): { site: HeritageSiteMetadata; distanceKm: number }[] {
+    const results = this.SITES_DB.map((site) => {
+      const distanceMeters = this.calculateHaversineMeters(
+        currentLat,
+        currentLon,
+        site.lat,
+        site.lon,
+      );
+      return {
+        site,
+        distanceKm: Number((distanceMeters / 1000).toFixed(2)),
+      };
+    });
+
+    results.sort((a, b) => a.distanceKm - b.distanceKm);
+    return results.slice(0, limit);
+  }
+
+  /**
+   * فحص السياج الجغرافي (Geofencing Alert) لمعرفة ما إذا كان الباحث داخل نطاق موقع محمي
+   */
+  public static checkGeofence(
+    currentLat: number,
+    currentLon: number,
+  ): { inside: boolean; activeSite?: HeritageSiteMetadata; distanceM: number } {
+    for (const site of this.SITES_DB) {
+      const dist = this.calculateHaversineMeters(currentLat, currentLon, site.lat, site.lon);
+      if (dist <= site.radiusMeters) {
+        return { inside: true, activeSite: site, distanceM: Math.round(dist) };
+      }
+    }
+    const nearest = this.findNearestSites(currentLat, currentLon, 1)[0];
+    return { inside: false, distanceM: Math.round(nearest ? nearest.distanceKm * 1000 : 999999) };
+  }
+
+  private static calculateHaversineMeters(
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number,
+  ): number {
+    const R = 6371000;
+    const rad = Math.PI / 180;
+    const dLat = (lat2 - lat1) * rad;
+    const dLon = (lon2 - lon1) * rad;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+}

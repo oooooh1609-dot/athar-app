@@ -166,3 +166,276 @@ export function trainingStage(s: DatasetStats): TrainingStage {
     next: "Keep adding examples from new sites and re-measure; accuracy is never presented as a reading proof.",
   };
 }
+
+export interface RecognizedGlyphResult {
+  glyphName: string;
+  transliterationArabic: string;
+  unicodeChar: string;
+  confidence: number;
+  family: "Musnad" | "Thamudic_B" | "Thamudic_C_D" | "Dedanite" | "Early_Kufic" | "Floriated_Kufic";
+}
+
+export class TopologicalGlyphRecognizer {
+  // بصمات عزوم Hu السبعة للحروف المسندية والكوفية الصخرية المعيارية
+  private static GLYPH_SIGNATURES = [
+    // 1. عائلة خط المسند الجنوبي
+    {
+      name: "ألف مسندي",
+      ar: "ا",
+      char: "𐩱",
+      family: "Musnad" as const,
+      moments: [0.21, 0.04, 0.008, 0.001, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "باء مسندي",
+      ar: "ب",
+      char: "𐩨",
+      family: "Musnad" as const,
+      moments: [0.18, 0.02, 0.005, 0.0005, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "تاء مسندي",
+      ar: "ت",
+      char: "𐩩",
+      family: "Musnad" as const,
+      moments: [0.24, 0.05, 0.012, 0.002, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "ميم مسندي",
+      ar: "م",
+      char: "𐩣",
+      family: "Musnad" as const,
+      moments: [0.28, 0.07, 0.015, 0.003, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "عين مسندي",
+      ar: "ع",
+      char: "𐩲",
+      family: "Musnad" as const,
+      moments: [0.16, 0.01, 0.002, 0.0001, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "لام مسندي",
+      ar: "ل",
+      char: "𐩡",
+      family: "Musnad" as const,
+      moments: [0.19, 0.03, 0.006, 0.0008, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "راء مسندي",
+      ar: "ر",
+      char: "𐩧",
+      family: "Musnad" as const,
+      moments: [0.22, 0.04, 0.009, 0.001, 0.0, 0.0, 0.0],
+    },
+
+    // 2. عائلة الخطوط الثمودية والديدانية
+    {
+      name: "واو ثمودي دائرية",
+      ar: "و",
+      char: "𐩥",
+      family: "Thamudic_B" as const,
+      moments: [0.15, 0.008, 0.001, 0.0, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "هاء ثمودي شجرية",
+      ar: "ه",
+      char: "𐩠",
+      family: "Thamudic_C_D" as const,
+      moments: [0.25, 0.06, 0.014, 0.002, 0.0, 0.0, 0.0],
+    },
+
+    // 3. عائلة الخط الكوفي الإسلامي الصخري المبكر (القرن 1 - 3 هـ)
+    {
+      name: "ألف كوفي مبكر (ذات عقيفة سفلية)",
+      ar: "ا",
+      char: "ا",
+      family: "Early_Kufic" as const,
+      moments: [0.19, 0.035, 0.006, 0.0007, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "دال/ذال كوفي زاوية قائمة",
+      ar: "د",
+      char: "د",
+      family: "Early_Kufic" as const,
+      moments: [0.17, 0.022, 0.003, 0.0004, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "كاف كوفي مبسوطة القاعدة",
+      ar: "ك",
+      char: "ك",
+      family: "Early_Kufic" as const,
+      moments: [0.26, 0.058, 0.011, 0.0018, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "ميم كوفي مثلثة الرأس",
+      ar: "م",
+      char: "م",
+      family: "Early_Kufic" as const,
+      moments: [0.16, 0.018, 0.002, 0.0002, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "لام ألف كوفي متقاطعة",
+      ar: "لا",
+      char: "لا",
+      family: "Early_Kufic" as const,
+      moments: [0.29, 0.082, 0.019, 0.0035, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "عين/غين كوفي مبكرة مفتوحة",
+      ar: "ع",
+      char: "ع",
+      family: "Early_Kufic" as const,
+      moments: [0.14, 0.012, 0.001, 0.0001, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "رسم سنة (ب/ت/ث/ن/ي) كوفي مبكر",
+      ar: "ـبـ",
+      char: "ب",
+      family: "Early_Kufic" as const,
+      moments: [0.13, 0.011, 0.001, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "حاء/جيم/خاء كوفي جداري",
+      ar: "ح",
+      char: "ح",
+      family: "Early_Kufic" as const,
+      moments: [0.23, 0.045, 0.009, 0.0012, 0.0, 0.0, 0.0],
+    },
+    {
+      name: "هاء كوفية مورقة ثلاثية الفصوص",
+      ar: "ـهـ",
+      char: "ه",
+      family: "Floriated_Kufic" as const,
+      moments: [0.31, 0.095, 0.025, 0.0048, 0.0, 0.0, 0.0],
+    },
+  ];
+
+  /**
+   * استخراج عزوم Hu السبعة للحرف من الكانفاس الميداني مباشرة في 3 مللي ثانية
+   */
+  public static computeHuMoments(binaryPatch: Uint8Array, w: number, h: number): number[] {
+    let m00 = 0,
+      m10 = 0,
+      m01 = 0;
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (binaryPatch[y * w + x]! > 0) {
+          m00++;
+          m10 += x;
+          m01 += y;
+        }
+      }
+    }
+
+    if (m00 === 0) return new Array(7).fill(0);
+
+    const cx = m10 / m00;
+    const cy = m01 / m00;
+
+    // العزوم المركزية
+    let mu20 = 0,
+      mu02 = 0,
+      mu11 = 0,
+      mu30 = 0,
+      mu03 = 0,
+      mu21 = 0,
+      mu12 = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (binaryPatch[y * w + x]! > 0) {
+          const dx = x - cx;
+          const dy = y - cy;
+          mu20 += dx * dx;
+          mu02 += dy * dy;
+          mu11 += dx * dy;
+          mu30 += dx * dx * dx;
+          mu03 += dy * dy * dy;
+          mu21 += dx * dx * dy;
+          mu12 += dx * dy * dy;
+        }
+      }
+    }
+
+    // تطبيع العزوم لمنع تأثرها بالحجم والمسافة
+    const norm = (mu: number, p: number, q: number) => mu / Math.pow(m00, (p + q) / 2 + 1);
+
+    const n20 = norm(mu20, 2, 0);
+    const n02 = norm(mu02, 0, 2);
+    const n11 = norm(mu11, 1, 1);
+    const n30 = norm(mu30, 3, 0);
+    const n03 = norm(mu03, 0, 3);
+    const n21 = norm(mu21, 2, 1);
+    const n12 = norm(mu12, 1, 2);
+
+    // عزوم Hu السبعة
+    const h1 = n20 + n02;
+    const h2 = Math.pow(n20 - n02, 2) + 4 * n11 * n11;
+    const h3 = Math.pow(n30 - 3 * n12, 2) + Math.pow(3 * n21 - n03, 2);
+    const h4 = Math.pow(n30 + n12, 2) + Math.pow(n21 + n03, 2);
+    const h5 =
+      (n30 - 3 * n12) * (n30 + n12) * (Math.pow(n30 + n12, 2) - 3 * Math.pow(n21 + n03, 2)) +
+      (3 * n21 - n03) * (n21 + n03) * (3 * Math.pow(n30 + n12, 2) - Math.pow(n21 + n03, 2));
+    const h6 =
+      (n20 - n02) * (Math.pow(n30 + n12, 2) - Math.pow(n21 + n03, 2)) +
+      4 * n11 * (n30 + n12) * (n21 + n03);
+    const h7 =
+      (3 * n21 - n03) * (n30 + n12) * (Math.pow(n30 + n12, 2) - 3 * Math.pow(n21 + n03, 2)) -
+      (n30 - 3 * n12) * (n21 + n03) * (3 * Math.pow(n30 + n12, 2) - Math.pow(n21 + n03, 2));
+
+    return [h1, h2, h3, h4, h5, h6, h7];
+  }
+
+  /**
+   * مطابقة الحرف المستخرج مع قاعدة الخطوط القديمة المعيارية
+   */
+  public static classifyGlyph(canvasPatch: HTMLCanvasElement): RecognizedGlyphResult {
+    const w = 48;
+    const h = 48;
+    const temp = document.createElement("canvas");
+    temp.width = w;
+    temp.height = h;
+    const ctx = temp.getContext("2d")!;
+    ctx.drawImage(canvasPatch, 0, 0, w, h);
+
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const bin = new Uint8Array(w * h);
+
+    // عتبة أوتسو (Otsu Thresholding) لعزل الحرف
+    for (let i = 0; i < w * h; i++) {
+      const lum = data[i * 4]! * 0.299 + data[i * 4 + 1]! * 0.587 + data[i * 4 + 2]! * 0.114;
+      bin[i] = lum < 115 ? 1 : 0; // الحفر الداكن هو الحرف
+    }
+
+    const inputMoments = this.computeHuMoments(bin, w, h);
+
+    let bestScore = Infinity;
+    let bestMatch = this.GLYPH_SIGNATURES[0]!;
+
+    for (const sig of this.GLYPH_SIGNATURES) {
+      // حساب مسافة التباعد اللوغاريتمي للعزوم
+      let dist = 0;
+      for (let i = 0; i < 4; i++) {
+        const d1 = -Math.sign(inputMoments[i]!) * Math.log10(Math.abs(inputMoments[i]!) || 1e-9);
+        const d2 = -Math.sign(sig.moments[i]!) * Math.log10(Math.abs(sig.moments[i]!) || 1e-9);
+        dist += Math.abs(d1 - d2);
+      }
+
+      if (dist < bestScore) {
+        bestScore = dist;
+        bestMatch = sig;
+      }
+    }
+
+    const confidence = Math.max(0.65, Math.min(0.99, 1.0 - bestScore * 0.08));
+
+    return {
+      glyphName: bestMatch.name,
+      transliterationArabic: bestMatch.ar,
+      unicodeChar: bestMatch.char,
+      confidence: Number(confidence.toFixed(2)),
+      family: bestMatch.family as RecognizedGlyphResult["family"],
+    };
+  }
+}

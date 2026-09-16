@@ -199,3 +199,101 @@ export function hotspotFromScreen(
  * which would render as a smear and look like a bug in the viewer.
  */
 export const looksEquirectangular = (w: number, h: number) => h > 0 && Math.abs(w / h - 2) < 0.12;
+
+export class CylindricalPanoramaStitcher {
+  /**
+   * تحويل الصورة العادية إلى إسقاط أسطواني لتعويض تقوس الدوران الميداني
+   */
+  public static cylindricalWarp(
+    canvas: HTMLCanvasElement,
+    focalLengthPx: number,
+  ): HTMLCanvasElement {
+    const w = canvas.width;
+    const h = canvas.height;
+    const ctx = canvas.getContext("2d")!;
+    const srcData = ctx.getImageData(0, 0, w, h);
+    const sPixels = srcData.data;
+
+    const outCanvas = document.createElement("canvas");
+    outCanvas.width = w;
+    outCanvas.height = h;
+    const outCtx = outCanvas.getContext("2d")!;
+    const outData = outCtx.createImageData(w, h);
+    const dPixels = outData.data;
+
+    const cx = w / 2;
+    const cy = h / 2;
+    const f = focalLengthPx;
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        // الإسقاط الأسطواني العكسي
+        const theta = (x - cx) / f;
+        const hVal = (y - cy) / f;
+
+        const X = Math.sin(theta);
+        const Y = hVal;
+        const Z = Math.cos(theta);
+
+        const srcX = Math.round(f * (X / Z) + cx);
+        const srcY = Math.round(f * (Y / Z) + cy);
+
+        if (srcX >= 0 && srcX < w && srcY >= 0 && srcY < h) {
+          const outIdx = (y * w + x) * 4;
+          const srcIdx = (srcY * w + srcX) * 4;
+          dPixels[outIdx] = sPixels[srcIdx]!;
+          dPixels[outIdx + 1] = sPixels[srcIdx + 1]!;
+          dPixels[outIdx + 2] = sPixels[srcIdx + 2]!;
+          dPixels[outIdx + 3] = sPixels[srcIdx + 3]!;
+        }
+      }
+    }
+
+    outCtx.putImageData(outData, 0, 0);
+    return outCanvas;
+  }
+
+  /**
+   * خياطة لقطتين متجاورتين لصخرة أثرية مع دمج ناعم للحواف (Linear Feather Blending)
+   */
+  public static stitchPair(
+    leftCanvas: HTMLCanvasElement,
+    rightCanvas: HTMLCanvasElement,
+    overlapPercentage = 0.28,
+  ): HTMLCanvasElement {
+    const wL = leftCanvas.width;
+    const hL = leftCanvas.height;
+    const wR = rightCanvas.width;
+
+    const overlapWidth = Math.floor(wR * overlapPercentage);
+    const totalWidth = wL + wR - overlapWidth;
+
+    const stitchedCanvas = document.createElement("canvas");
+    stitchedCanvas.width = totalWidth;
+    stitchedCanvas.height = hL;
+    const ctx = stitchedCanvas.getContext("2d")!;
+
+    // رسم اللوحة الأولى
+    ctx.drawImage(leftCanvas, 0, 0);
+
+    // استخراج قناة الدمج المتدرج (Feather Mask) لمنع ظهور خط فاصل بين الصورتين
+    const rightCtx = rightCanvas.getContext("2d")!;
+    const rightImg = rightCtx.getImageData(0, 0, wR, hL);
+    const rData = rightImg.data;
+
+    // تطبيق تدرج الشفافية على منطقة التداخل
+    for (let y = 0; y < hL; y++) {
+      for (let x = 0; x < overlapWidth; x++) {
+        const alphaFactor = x / overlapWidth;
+        const idx = (y * wR + x) * 4;
+        rData[idx + 3] = Math.round(rData[idx + 3]! * alphaFactor);
+      }
+    }
+    rightCtx.putImageData(rightImg, 0, 0);
+
+    // رسم اللوحة الثانية فوق منطقة التداخل
+    ctx.drawImage(rightCanvas, wL - overlapWidth, 0);
+
+    return stitchedCanvas;
+  }
+}

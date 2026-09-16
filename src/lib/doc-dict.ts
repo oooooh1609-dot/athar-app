@@ -497,3 +497,133 @@ export const DOC_DICT: Record<string, Record<string, string>> = {
     "rp.h.page": "由 Athar 生成。释读为机器建议，需专家复核。",
   },
 };
+
+export interface Point2D {
+  x: number;
+  y: number;
+}
+
+export class HomographyRectifier {
+  /**
+   * حساب مصفوفة الهوموغرافي 3x3 لتحويل 4 نقاط مائلة إلى مستطيل متعامد
+   */
+  public static computeHomography(src: Point2D[], dst: Point2D[]): number[] {
+    if (src.length !== 4 || dst.length !== 4) {
+      throw new Error("يتطلب تقويم المنظور 4 نقاط مرجعية بالضبط");
+    }
+
+    const A: number[][] = [];
+    for (let i = 0; i < 4; i++) {
+      const sx = src[i]!.x,
+        sy = src[i]!.y;
+      const dx = dst[i]!.x,
+        dy = dst[i]!.y;
+      A.push([-sx, -sy, -1, 0, 0, 0, sx * dx, sy * dx, dx]);
+      A.push([0, 0, 0, -sx, -sy, -1, sx * dy, sy * dy, dy]);
+    }
+
+    // حل النظام الخطي المتجانس باستخدام خوارزمية الحذف الغاوسي
+    return this.solveGaussian(A);
+  }
+
+  /**
+   * تقويم الصورة وفرد واجهة النقش الصخري إلى مسقط أفقي نقي (Orthorectified Canvas)
+   */
+  public static rectifyPerspective(
+    sourceCanvas: HTMLCanvasElement,
+    quadPoints: Point2D[],
+    targetWidth = 1024,
+    targetHeight = 1024,
+  ): HTMLCanvasElement {
+    const outputCanvas = document.createElement("canvas");
+    outputCanvas.width = targetWidth;
+    outputCanvas.height = targetHeight;
+    const outCtx = outputCanvas.getContext("2d")!;
+    const inCtx = sourceCanvas.getContext("2d")!;
+
+    const srcData = inCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+    const outData = outCtx.createImageData(targetWidth, targetHeight);
+
+    const dstPoints: Point2D[] = [
+      { x: 0, y: 0 },
+      { x: targetWidth, y: 0 },
+      { x: targetWidth, y: targetHeight },
+      { x: 0, y: targetHeight },
+    ];
+
+    // حساب المعكوس لإسقاط كل بيكسل ناتج على الصورة الأصلية (Backward Mapping)
+    const H = this.computeHomography(dstPoints, quadPoints);
+
+    const srcW = sourceCanvas.width;
+    const srcH = sourceCanvas.height;
+    const sPixels = srcData.data;
+    const dPixels = outData.data;
+
+    for (let y = 0; y < targetHeight; y++) {
+      for (let x = 0; x < targetWidth; x++) {
+        // تطبيق مصفوفة التحويل
+        const denom = H[6]! * x + H[7]! * y + H[8]!;
+        const srcX = (H[0]! * x + H[1]! * y + H[2]!) / denom;
+        const srcY = (H[3]! * x + H[4]! * y + H[5]!) / denom;
+
+        if (srcX >= 0 && srcX < srcW - 1 && srcY >= 0 && srcY < srcH - 1) {
+          // استيفاء ثنائي الخطية (Bilinear Interpolation) لمنع تشوش الحروف
+          const x0 = Math.floor(srcX);
+          const x1 = x0 + 1;
+          const y0 = Math.floor(srcY);
+          const y1 = y0 + 1;
+
+          const dx = srcX - x0;
+          const dy = srcY - y0;
+
+          const outIdx = (y * targetWidth + x) * 4;
+
+          for (let c = 0; c < 3; c++) {
+            const p00 = sPixels[(y0 * srcW + x0) * 4 + c]!;
+            const p10 = sPixels[(y0 * srcW + x1) * 4 + c]!;
+            const p01 = sPixels[(y1 * srcW + x0) * 4 + c]!;
+            const p11 = sPixels[(y1 * srcW + x1) * 4 + c]!;
+
+            const val =
+              p00 * (1 - dx) * (1 - dy) + p10 * dx * (1 - dy) + p01 * (1 - dx) * dy + p11 * dx * dy;
+
+            dPixels[outIdx + c] = val;
+          }
+          dPixels[outIdx + 3] = 255;
+        }
+      }
+    }
+
+    outCtx.putImageData(outData, 0, 0);
+    return outputCanvas;
+  }
+
+  private static solveGaussian(A: number[][]): number[] {
+    const m = 8;
+    for (let i = 0; i < m; i++) {
+      let maxRow = i;
+      for (let k = i + 1; k < m; k++) {
+        if (Math.abs(A[k]![i]!) > Math.abs(A[maxRow]![i]!)) maxRow = k;
+      }
+      [A[i], A[maxRow]] = [A[maxRow]!, A[i]!];
+
+      for (let k = i + 1; k < m; k++) {
+        const factor = A[k]![i]! / (A[i]![i]! || 1e-7);
+        for (let j = i; j <= m; j++) {
+          A[k]![j] -= factor * A[i]![j]!;
+        }
+      }
+    }
+
+    const h = new Array(9).fill(0);
+    h[8] = 1.0;
+    for (let i = m - 1; i >= 0; i--) {
+      let sum = A[i]![8]!;
+      for (let j = i + 1; j < m; j++) {
+        sum -= A[i]![j]! * h[j];
+      }
+      h[i] = sum / (A[i]![i] || 1e-7);
+    }
+    return h;
+  }
+}

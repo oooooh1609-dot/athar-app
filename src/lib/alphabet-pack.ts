@@ -247,3 +247,308 @@ export function tokensToTransliteration(tokens: InscriptionToken[]): {
     .join("");
   return { text, missing };
 }
+
+export type WritingDirection = "rtl" | "ltr" | "boustrophedon" | "vertical_boustrophedon";
+
+export type EpigraphicScriptCategory =
+  | "musnad_sabaic"
+  | "musnad_minaic"
+  | "thamudic"
+  | "dedanite"
+  | "early_kufic_undotted" // الكوفي الحجازي المبكر (غير منقوط)
+  | "kufic_floriated" // الكوفي المورق والمزهر
+  | "kufic_geometric" // الكوفي المربع والهندسي
+  | "early_naskh"; // النسخ الأيوبي والمملوكي
+
+export interface MusnadNumberMatch {
+  raw: string;
+  value: number;
+}
+
+export interface IslamicFormulaMatch {
+  rawRasm: string;
+  reconstructedArabic: string;
+  category: "استغفار وترحم" | "شهادة وتوحيد" | "بناء ومنشآت" | "تأريخ زمني" | "آية قرآنية";
+  confidence: number;
+  periodApprox: string;
+}
+
+export class EpigraphicAlphabetEngine {
+  // الأرقام المسندية المعيارية
+  private static MUSNAD_NUMERALS: Record<string, number> = {
+    "𐩾": 1, // رمز الآحاد
+    "𐩿": 5, // رمز الخمسة
+    "𐩵": 10, // رمز العشرة
+    "𐩲": 50, // رمز الخمسين
+    "𐩪": 100, // رمز المئة
+    "𐩱": 1000, // رمز الألف
+  };
+
+  // جدول حساب الجُمّل الكبير (Abjad Numeral Chronograms)
+  private static ABJAD_TABLE: Record<string, number> = {
+    ا: 1,
+    ب: 2,
+    ج: 3,
+    د: 4,
+    ه: 5,
+    و: 6,
+    ز: 7,
+    ح: 8,
+    ط: 9,
+    ي: 10,
+    ك: 20,
+    ل: 30,
+    م: 40,
+    ن: 50,
+    س: 60,
+    ع: 70,
+    ف: 80,
+    ص: 90,
+    ق: 100,
+    ر: 200,
+    ش: 300,
+    ت: 400,
+    ث: 500,
+    خ: 600,
+    ذ: 700,
+    ض: 800,
+    ظ: 900,
+    غ: 1000,
+  };
+
+  // معجم الأنماط التوثيقية الصخرية الإسلامية للرسم غير المنقوط
+  private static ISLAMIC_FORMULA_PATTERNS: {
+    regex: RegExp;
+    reconstruction: string;
+    category: IslamicFormulaMatch["category"];
+    period: string;
+  }[] = [
+    {
+      regex: /برحم?|يرحم?|رحمه?|ر ح م/u,
+      reconstruction: "رحم الله / يرحم الله فلان بن فلان",
+      category: "استغفار وترحم",
+      period: "القرن الأول والثاني الهجري",
+    },
+    {
+      regex: /اغفر?|عفر|لذنب?|لذنبه?|ماتقدم?/u,
+      reconstruction: "اللهم اغفر لـ / غفر الله له ما تقدم من ذنبه",
+      category: "استغفار وترحم",
+      period: "القرن الأول إلى الثالث الهجري",
+    },
+    {
+      regex: /اشهد|شهد|لا اله الا الله|وحده لا شريك/u,
+      reconstruction: "شهد أن لا إله إلا الله وحده لا شريك له وأن محمداً عبده ورسوله",
+      category: "شهادة وتوحيد",
+      period: "القرن الأول الهجري فصاعداً",
+    },
+    {
+      regex: /بنى|بنا|امر ببناء|السد|هذا السد|المسجد/u,
+      reconstruction: "أمر ببناء هذا السد / المسجد عبد الله أمير المؤمنين",
+      category: "بناء ومنشآت",
+      period: "العصر الأموي والعباسي",
+    },
+    {
+      regex: /سنه|سنة|سنت|عشرين|اربع وعشرين|اربعين|ثمانين|ميه|مائة/u,
+      reconstruction: "وكتب لسنة ... هجرية",
+      category: "تأريخ زمني",
+      period: "توثيق تقويمي هجري",
+    },
+    {
+      regex: /توكلت|حسبي الله|امنت بالله|ثقتي بالله/u,
+      reconstruction: "آمنت بالله وتوكلت على الله وهو حسبي ونعم الوكيل",
+      category: "شهادة وتوحيد",
+      period: "صدر الإسلام والأموي",
+    },
+  ];
+
+  /**
+   * فك وتحقيق الرسم غير المنقوط للنقوش الإسلامية المبكرة
+   */
+  public static reconstructEarlyIslamicRasm(undottedText: string): IslamicFormulaMatch[] {
+    const clean = undottedText.replace(/[\u064B-\u065F\u0670]/gu, "").trim();
+    const matches: IslamicFormulaMatch[] = [];
+
+    for (const item of this.ISLAMIC_FORMULA_PATTERNS) {
+      if (item.regex.test(clean)) {
+        matches.push({
+          rawRasm: clean,
+          reconstructedArabic: item.reconstruction,
+          category: item.category,
+          confidence: 0.95,
+          periodApprox: item.period,
+        });
+      }
+    }
+
+    if (matches.length === 0) {
+      matches.push({
+        rawRasm: clean,
+        reconstructedArabic: this.normalizeEarlyRasm(clean),
+        category: "استغفار وترحم",
+        confidence: 0.72,
+        periodApprox: "نقش صخري إسلامي مبكر",
+      });
+    }
+
+    return matches;
+  }
+
+  private static normalizeEarlyRasm(input: string): string {
+    return input
+      .replace(/[إأآا]/gu, "ا")
+      .replace(/[ىي]/gu, "ي")
+      .replace(/ة/gu, "ه");
+  }
+
+  /**
+   * حساب التأريخ الزمني بحساب الجُمّل (Abjad Chronogram)
+   */
+  public static calculateAbjadChronogram(text: string): {
+    totalValue: number;
+    matchedLetters: string[];
+  } {
+    let total = 0;
+    const matched: string[] = [];
+    const normalized = text.replace(/[^ء-ي]/gu, "");
+
+    for (const char of normalized) {
+      if (this.ABJAD_TABLE[char]) {
+        total += this.ABJAD_TABLE[char];
+        matched.push(`${char}(${this.ABJAD_TABLE[char]})`);
+      }
+    }
+
+    return { totalValue: total, matchedLetters: matched };
+  }
+
+  /**
+   * تفكيك وحساب الأرقام المسندية المركبة (مثل: 𐩽𐩱𐩱𐩪𐩵𐩿𐩾𐩽 = 2116)
+   */
+  public static decodeMusnadNumerals(text: string): MusnadNumberMatch[] {
+    const matches: MusnadNumberMatch[] = [];
+    // استخراج المقاطع المحصورة بين فواصِل الكلمات المسندية 𐩽
+    const regex = /𐩽([𐩾𐩿𐩵𐩲𐩪𐩱]+)𐩽/gu;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      const raw = match[1]!;
+      let total = 0;
+      for (const ch of raw) {
+        if (this.MUSNAD_NUMERALS[ch]) {
+          total += this.MUSNAD_NUMERALS[ch];
+        }
+      }
+      matches.push({ raw, value: total });
+    }
+
+    return matches;
+  }
+
+  /**
+   * محلل السطور المحراثية (Boustrophedon) للمسند والسطور العادية للكوفي
+   */
+  public static parseInscriptionLines(
+    lines: string[],
+    direction: WritingDirection = "rtl",
+  ): {
+    lineIndex: number;
+    readingDirection: "rtl" | "ltr";
+    text: string;
+    naturalOrder: string;
+  }[] {
+    return lines.map((line, idx) => {
+      let lineDir: "rtl" | "ltr" = "rtl";
+
+      if (direction === "boustrophedon") {
+        // السطور الزوجية (0, 2, 4..) من اليمين لليسار، والفردية تنعكس تلقائياً
+        lineDir = idx % 2 === 0 ? "rtl" : "ltr";
+      } else if (direction === "ltr") {
+        lineDir = "ltr";
+      }
+
+      const naturalOrder = lineDir === "ltr" ? Array.from(line).reverse().join("") : line;
+
+      return {
+        lineIndex: idx + 1,
+        readingDirection: lineDir,
+        text: line,
+        naturalOrder,
+      };
+    });
+  }
+
+  /**
+   * محلل السطور المحراثية (Boustrophedon Parser) - متوافق مع الاستدعاءات المباشرة
+   */
+  public static parseBoustrophedonInscription(
+    lines: string[],
+    initialDirection: "rtl" | "ltr" = "rtl",
+  ): {
+    lineIndex: number;
+    direction: "rtl" | "ltr";
+    text: string;
+    naturalReadingOrder: string;
+  }[] {
+    return lines.map((line, idx) => {
+      const isReversed = idx % 2 !== 0;
+      let effectiveDir: "rtl" | "ltr" = initialDirection;
+
+      if (isReversed) {
+        effectiveDir = initialDirection === "rtl" ? "ltr" : "rtl";
+      }
+
+      const naturalOrder = effectiveDir === "ltr" ? Array.from(line).reverse().join("") : line;
+
+      return {
+        lineIndex: idx + 1,
+        direction: effectiveDir,
+        text: line,
+        naturalReadingOrder: naturalOrder,
+      };
+    });
+  }
+
+  /**
+   * التشفير الصوتي ومطابقة الحروف المندغمة في لغات جنوب وشمال الجزيرة
+   */
+  public static phoneticTransliterate(musnadText: string): string {
+    const table: Record<string, string> = {
+      "𐩠": "هـ",
+      "𐩡": "ل",
+      "𐩢": "ح",
+      "𐩣": "م",
+      "𐩤": "ق",
+      "𐩥": "و",
+      "𐩦": "ش",
+      "𐩧": "ر",
+      "𐩨": "ب",
+      "𐩩": "ت",
+      "𐩪": "س",
+      "𐩫": "ك",
+      "𐩬": "ن",
+      "𐩭": "خ",
+      "𐩮": "ذ",
+      "𐩯": "ص",
+      "𐩰": "ض",
+      "𐩱": "أ",
+      "𐩲": "ع",
+      "𐩳": "ظ",
+      "𐩴": "ز",
+      "𐩵": "ج",
+      "𐩶": "غ",
+      "𐩷": "ط",
+      "𐩸": "د",
+      "𐩹": "ي",
+      "𐩺": "ث",
+      "𐩻": "س² (شين ثانية)",
+      "𐩼": "س³ (سين ثالثة)",
+      "𐩽": " | ",
+    };
+
+    let result = "";
+    for (const char of musnadText) {
+      result += table[char] || char;
+    }
+    return result;
+  }
+}

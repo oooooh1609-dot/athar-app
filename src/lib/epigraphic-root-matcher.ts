@@ -308,3 +308,295 @@ export function matchEpigraphicRoots(
     sourceFamily: item.family,
   }));
 }
+
+export interface EpigraphicMatch {
+  root: string;
+  arabicMeaning: string;
+  dialect:
+    | "Sabaic"
+    | "Minaic"
+    | "Qatabanic"
+    | "Hadramitic"
+    | "Thamudic"
+    | "Dedanite"
+    | "Early_Islamic_Kufic"
+    | "Abbasid_Monumental";
+  confidence: number;
+  grammarNote?: string;
+}
+
+const OFFLINE_LEXICON: Record<string, { meaning: string; dialect: string; grammar?: string }[]> = {
+  // مفردات المسند والثمودي والديداني
+  ملك: [
+    { meaning: "مَلَكَ / حَكَمَ / قاد الجيش", dialect: "Sabaic", grammar: "فعل ماضٍ" },
+    { meaning: "الملك / الحاكم / القيل", dialect: "Qatabanic", grammar: "اسم معرف" },
+  ],
+  بني: [
+    {
+      meaning: "بَنَى / شَيَّدَ / أقام منشأة أو معبداً",
+      dialect: "Sabaic",
+      grammar: "فعل ماضٍ متعدٍ",
+    },
+  ],
+  قين: [
+    {
+      meaning: "قيّن / صانع المعادن أو الحداد / وكيلاً",
+      dialect: "Minaic",
+      grammar: "اسم مهنة",
+    },
+  ],
+  ود: [
+    { meaning: "المعبود وَدّ / إله المحبة والحماية", dialect: "Minaic", grammar: "اسم علم إلهي" },
+    { meaning: "أحبَّ / عاهد", dialect: "Thamudic", grammar: "فعل" },
+  ],
+  سلم: [
+    { meaning: "سَلِمَ / أمِنَ / حفظه الله", dialect: "Thamudic", grammar: "صيغة دعائية" },
+    {
+      meaning: "تمثال نذري من البرونز أو الحجر",
+      dialect: "Sabaic",
+      grammar: "اسم نذري",
+    },
+  ],
+  كبر: [
+    {
+      meaning: "كبير القوم / زعيم القبيلة أو المستوطنة",
+      dialect: "Minaic",
+      grammar: "لقب رسمي",
+    },
+  ],
+  نفس: [
+    {
+      meaning: "نصب تذكاري جنائزي / روح الميت",
+      dialect: "Qatabanic",
+      grammar: "شاهدة قبر",
+    },
+  ],
+
+  // مفردات النقوش الإسلامية الصخرية (القرن 1 - 4 هـ)
+  غفر: [
+    {
+      meaning: "طلب المغفرة والعفو الإلهي لكاتب النقش أو والديه",
+      dialect: "Early_Islamic_Kufic",
+      grammar: "فعل دعائي (اللهم اغفر)",
+    },
+  ],
+  رحم: [
+    {
+      meaning: "الترحم على صاحب النقش أو الميت (يرحم الله / رحمه الله)",
+      dialect: "Early_Islamic_Kufic",
+      grammar: "صيغة ترحم وتأبين",
+    },
+  ],
+  شهد: [
+    {
+      meaning: "إقرار بالتوحيد والرسالة (شهد فلان أن لا إله إلا الله)",
+      dialect: "Early_Islamic_Kufic",
+      grammar: "صيغة إقرار إيماني",
+    },
+  ],
+  كتب: [
+    {
+      meaning: "خَطَّ ونَقَرَ النقش في هذا الموضع من الجبل",
+      dialect: "Early_Islamic_Kufic",
+      grammar: "فعل توثيق صخري",
+    },
+  ],
+  سنة: [
+    {
+      meaning: "عام التأريخ الهجري لوقوع الحدث أو كتابة النقش",
+      dialect: "Early_Islamic_Kufic",
+      grammar: "ظرف زمان تأريخي",
+    },
+  ],
+  عمر: [
+    {
+      meaning: "عَمَّرَ / أصلح وشيّد السد أو الطريق أو البئر المحفورة",
+      dialect: "Abbasid_Monumental",
+      grammar: "فعل تشييد وبناء وقفي",
+    },
+  ],
+  حسب: [
+    {
+      meaning: "التوكل والاعتماد على الله (حسبي الله ونعم الوكيل)",
+      dialect: "Early_Islamic_Kufic",
+      grammar: "صيغة اعتصام وتوكل",
+    },
+  ],
+};
+
+export class EpigraphicPrefixTrieNode {
+  children: Map<string, EpigraphicPrefixTrieNode> = new Map();
+  isEndOfWord: boolean = false;
+  entries: { meaning: string; dialect: string; grammar?: string }[] = [];
+  rootWord: string = "";
+}
+
+export class EpigraphicPrefixTrie {
+  private root = new EpigraphicPrefixTrieNode();
+
+  constructor() {
+    this.buildIndex();
+  }
+
+  private buildIndex(): void {
+    for (const [key, entries] of Object.entries(OFFLINE_LEXICON)) {
+      this.insert(key, entries);
+    }
+  }
+
+  public insert(
+    word: string,
+    entries: { meaning: string; dialect: string; grammar?: string }[],
+  ): void {
+    let current = this.root;
+    for (const char of word) {
+      if (!current.children.has(char)) {
+        current.children.set(char, new EpigraphicPrefixTrieNode());
+      }
+      current = current.children.get(char)!;
+    }
+    current.isEndOfWord = true;
+    current.entries = entries;
+    current.rootWord = word;
+  }
+
+  public searchPrefix(prefix: string): EpigraphicMatch[] {
+    let current = this.root;
+    for (const char of prefix) {
+      if (!current.children.has(char)) {
+        return [];
+      }
+      current = current.children.get(char)!;
+    }
+    const results: EpigraphicMatch[] = [];
+    this.collectAll(current, results);
+    return results;
+  }
+
+  private collectAll(node: EpigraphicPrefixTrieNode, results: EpigraphicMatch[]): void {
+    if (node.isEndOfWord) {
+      for (const item of node.entries) {
+        results.push({
+          root: node.rootWord,
+          arabicMeaning: item.meaning,
+          dialect: item.dialect as EpigraphicMatch["dialect"],
+          confidence: 0.95,
+          grammarNote: item.grammar,
+        });
+      }
+    }
+    for (const child of node.children.values()) {
+      this.collectAll(child, results);
+    }
+  }
+}
+
+export class EpigraphicRootMatcher {
+  private trie = new EpigraphicPrefixTrie();
+
+  public normalizeEpigraphicText(input: string): string {
+    return input
+      .trim()
+      .replace(/[\u10A60-\u10A7F]/gu, (char) => this.musnadToProtoArabic(char))
+      .replace(/𐩽/gu, " ")
+      .replace(/[إأآا]/gu, "ا")
+      .replace(/[ىي]/gu, "ي")
+      .replace(/ة/gu, "ه");
+  }
+
+  private musnadToProtoArabic(char: string): string {
+    const code = char.codePointAt(0);
+    if (!code) return char;
+    const musnadMap: Record<number, string> = {
+      0x10a60: "ه",
+      0x10a61: "ل",
+      0x10a62: "ح",
+      0x10a63: "م",
+      0x10a64: "ق",
+      0x10a65: "و",
+      0x10a66: "ش",
+      0x10a67: "ر",
+      0x10a68: "ب",
+      0x10a69: "ت",
+      0x10a6a: "س",
+      0x10a6b: "ك",
+      0x10a6c: "ن",
+      0x10a6d: "خ",
+      0x10a6e: "ذ",
+      0x10a6f: "ص",
+      0x10a70: "ض",
+      0x10a71: "ف",
+      0x10a72: "ع",
+      0x10a73: "ظ",
+      0x10a74: "ز",
+      0x10a75: "غ",
+      0x10a76: "ط",
+      0x10a77: "د",
+      0x10a78: "ي",
+      0x10a79: "ث",
+      0x10a7a: "ص",
+      0x10a7b: "ظ",
+      0x10a7c: "س",
+      0x10a7d: "س",
+      0x10a7e: "ث",
+      0x10a7f: " ",
+    };
+    return musnadMap[code] || char;
+  }
+
+  public matchRoot(word: string): EpigraphicMatch[] {
+    const clean = this.normalizeEpigraphicText(word);
+    const results: EpigraphicMatch[] = [];
+
+    if (OFFLINE_LEXICON[clean]) {
+      for (const item of OFFLINE_LEXICON[clean]!) {
+        results.push({
+          root: clean,
+          arabicMeaning: item.meaning,
+          dialect: item.dialect as EpigraphicMatch["dialect"],
+          confidence: 1.0,
+          grammarNote: item.grammar,
+        });
+      }
+      return results;
+    }
+
+    for (const [dictRoot, entries] of Object.entries(OFFLINE_LEXICON)) {
+      const dist = this.levenshtein(clean, dictRoot);
+      if (dist <= 1) {
+        for (const item of entries) {
+          results.push({
+            root: dictRoot,
+            arabicMeaning: item.meaning,
+            dialect: item.dialect as EpigraphicMatch["dialect"],
+            confidence: Math.max(0.65, 1.0 - dist * 0.25),
+            grammarNote: `${item.grammar || ""} (مطابقة تقريبية لتآكل الحرف الصخري)`,
+          });
+        }
+      }
+    }
+
+    return results;
+  }
+
+  private levenshtein(a: string, b: string): number {
+    const matrix: number[][] = [];
+    for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+    for (let j = 0; j <= a.length; j++) matrix[0]![j] = j;
+
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i]![j] = matrix[i - 1]![j - 1]!;
+        } else {
+          matrix[i]![j] = Math.min(
+            matrix[i - 1]![j - 1]! + 1,
+            matrix[i]![j - 1]! + 1,
+            matrix[i - 1]![j]! + 1,
+          );
+        }
+      }
+    }
+    return matrix[b.length]![a.length]!;
+  }
+}

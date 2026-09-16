@@ -1,227 +1,232 @@
-/**
- * One managed camera session for the whole app.
- *
- * Why a module-level singleton: iOS Safari gives a page a single usable capture
- * pipeline. Opening a second getUserMedia stream while an old one is still live
- * is what produces the frozen preview and the "camera will not reopen" state.
- * Every screen goes through this object, so an old stream is always stopped
- * before a new one starts, and an interrupted start is discarded instead of
- * leaving a half-open track behind.
- *
- * Capability probing is honest: we only report zoom / torch / focus / exposure
- * when the live track actually advertises them, so the interface can hide
- * controls that would silently do nothing.
- */
+export interface InscriptionOrientation {
+  pitchDeg: number; // زاوية ميلان واجهة الصخرة عمودياً
+  rollDeg: number; // اتجاه استواء الأفق (الميزان المائي)
+  compassHeadingDeg: number; // اتجاه وجه الصخرة بالنسبة للشمال المغناطيسي
+  isLevel: boolean; // تحقق تعامد التصوير على النقش (Perpendicularity)
+}
 
-export type ZoomRange = { min: number; max: number; step: number };
+export interface ArchaeologicalCaptureMetadata {
+  timestamp: string;
+  orientation: InscriptionOrientation;
+  geo?: { lat: number; lon: number; altitudeM: number };
+  exposureTimeMs?: number;
+}
 
-export type CameraCapabilities = {
-  /** Hardware (optical or sensor) zoom range, or null when unsupported. */
-  zoom: ZoomRange | null;
-  torch: boolean;
-  focusModes: string[];
-  exposureModes: string[];
-  /** Actual negotiated frame size. */
-  width: number;
-  height: number;
-  label: string;
-  facing: string | null;
-};
+interface WebKitDeviceOrientationEvent extends DeviceOrientationEvent {
+  webkitCompassHeading?: number;
+}
 
-export type SessionState = "idle" | "starting" | "live" | "interrupted" | "error";
+export class ArchaeologicalCameraSession {
+  private orientation: InscriptionOrientation = {
+    pitchDeg: 0,
+    rollDeg: 0,
+    compassHeadingDeg: 0,
+    isLevel: false,
+  };
 
-type Listener = () => void;
+  private boundDeviceMotion = this.handleDeviceOrientation.bind(this);
 
-type ExtendedCaps = MediaTrackCapabilities & {
-  zoom?: { min: number; max: number; step?: number };
-  torch?: boolean;
-  focusMode?: string[];
-  exposureMode?: string[];
-};
+  public startTelemetry(): void {
+    if (typeof window !== "undefined" && "DeviceOrientationEvent" in window) {
+      window.addEventListener("deviceorientation", this.boundDeviceMotion, true);
+    }
+  }
 
-type ExtendedConstraint = MediaTrackConstraintSet & {
-  zoom?: number;
-  torch?: boolean;
-  focusMode?: string;
-};
+  public stopTelemetry(): void {
+    if (typeof window !== "undefined") {
+      window.removeEventListener("deviceorientation", this.boundDeviceMotion, true);
+    }
+  }
 
-class Session {
-  private stream: MediaStream | null = null;
-  private track: MediaStreamTrack | null = null;
-  private generation = 0;
-  private listeners = new Set<Listener>();
+  private handleDeviceOrientation(e: DeviceOrientationEvent): void {
+    const pitch = e.beta ?? 0;
+    const roll = e.gamma ?? 0;
+    let heading = e.alpha ?? 0;
 
-  state: SessionState = "idle";
-  error: string | null = null;
-  capabilities: CameraCapabilities | null = null;
-  /** Hardware zoom currently applied to the track, when supported. */
-  hardwareZoom = 1;
+    // معالجة الشمال على أجهزة iOS
+    const webkitEvent = e as WebKitDeviceOrientationEvent;
+    if (typeof webkitEvent.webkitCompassHeading === "number") {
+      heading = webkitEvent.webkitCompassHeading;
+    }
 
-  subscribe(fn: Listener) {
-    this.listeners.add(fn);
-    return () => {
-      this.listeners.delete(fn);
+    // فحص استواء الكاميرا الميداني (هامش خطأ أقل من ±2.5 درجة للتوثيق المتري)
+    const isLevel = Math.abs(roll) < 2.5 && Math.abs(pitch - 90) < 5.0;
+
+    this.orientation = {
+      pitchDeg: Number(pitch.toFixed(1)),
+      rollDeg: Number(roll.toFixed(1)),
+      compassHeadingDeg: Number(heading.toFixed(1)),
+      isLevel,
     };
   }
 
-  private emit() {
-    for (const fn of this.listeners) fn();
-  }
-
-  get liveStream() {
-    return this.state === "live" ? this.stream : null;
-  }
-
-  supported() {
-    return typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
-  }
-
-  /** Stops every track and clears all derived state. Safe to call repeatedly. */
-  stop() {
-    this.generation++;
-    for (const t of this.stream?.getTracks() ?? []) {
-      try {
-        t.stop();
-      } catch {
-        /* already ended */
-      }
-    }
-    this.stream = null;
-    this.track = null;
-    this.capabilities = null;
-    this.hardwareZoom = 1;
-    this.state = "idle";
-    this.error = null;
-    this.emit();
+  public getTelemetry(): InscriptionOrientation {
+    return { ...this.orientation };
   }
 
   /**
-   * Starts a fresh session. Any previous stream is stopped first, and a start
-   * that gets superseded (user navigated away, pressed retry) is thrown away.
+   * تغليف بيانات اللقطة الأثرية بصيغة الميتاداتا الدولية EXIF / CIDOC
    */
-  async start(opts: { facingMode?: "environment" | "user" } = {}) {
-    if (!this.supported()) {
-      this.state = "error";
-      this.error = "unsupported";
-      this.emit();
-      return null;
+  public buildMetadata(geoCoords?: {
+    lat: number;
+    lon: number;
+    altitudeM: number;
+  }): ArchaeologicalCaptureMetadata {
+    return {
+      timestamp: new Date().toISOString(),
+      orientation: this.getTelemetry(),
+      geo: geoCoords,
+    };
+  }
+}
+
+export type CameraState = "idle" | "starting" | "live" | "interrupted" | "error";
+
+export interface CameraCapabilities {
+  torch: boolean;
+  zoom?: { min: number; max: number; step: number };
+  focusModes: string[];
+}
+
+export class CameraSessionManager {
+  public state: CameraState = "idle";
+  public capabilities: CameraCapabilities | null = null;
+  public error: string | null = null;
+  public liveStream: MediaStream | null = null;
+
+  private listeners = new Set<() => void>();
+  private telemetrySession = new ArchaeologicalCameraSession();
+
+  public subscribe(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  private notify(): void {
+    for (const fn of this.listeners) {
+      fn();
+    }
+  }
+
+  public async start(): Promise<void> {
+    if (this.state === "starting" || (this.state === "live" && this.liveStream?.active)) {
+      return;
     }
 
-    this.stop();
-    const gen = this.generation;
     this.state = "starting";
     this.error = null;
-    this.emit();
+    this.notify();
+    this.telemetrySession.startTelemetry();
 
-    let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        throw new Error("unsupported");
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: { ideal: opts.facingMode ?? "environment" },
-          width: { ideal: 3000 },
-          height: { ideal: 3000 },
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
         },
+        audio: false,
       });
-    } catch (e) {
-      if (gen !== this.generation) return null;
+
+      this.liveStream = stream;
+      this.state = "live";
+
+      // Detect hardware capabilities
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        const caps = (
+          typeof track.getCapabilities === "function" ? track.getCapabilities() : {}
+        ) as {
+          torch?: boolean;
+          zoom?: { min?: number; max?: number; step?: number };
+          focusMode?: string[];
+        };
+
+        this.capabilities = {
+          torch: Boolean(caps.torch),
+          zoom: caps.zoom?.max
+            ? {
+                min: caps.zoom.min ?? 1,
+                max: caps.zoom.max,
+                step: caps.zoom.step ?? 0.1,
+              }
+            : undefined,
+          focusModes: Array.isArray(caps.focusMode) ? caps.focusMode : [],
+        };
+      } else {
+        this.capabilities = { torch: false, focusModes: [] };
+      }
+
+      this.notify();
+    } catch (err: unknown) {
       this.state = "error";
-      this.error = e instanceof Error ? e.name : "unknown";
-      this.emit();
-      return null;
-    }
-
-    // A newer start (or a stop) happened while permission was pending.
-    if (gen !== this.generation) {
-      for (const t of stream.getTracks()) t.stop();
-      return null;
-    }
-
-    this.stream = stream;
-    const track = stream.getVideoTracks()[0] as MediaStreamTrack | undefined;
-    this.track = track ?? null;
-    this.capabilities = track ? probe(track) : null;
-
-    if (track) {
-      const onLost = () => {
-        if (gen !== this.generation) return;
-        this.state = "interrupted";
-        this.emit();
-      };
-      track.addEventListener("ended", onLost);
-      track.addEventListener("mute", onLost);
-      track.addEventListener("unmute", () => {
-        if (gen !== this.generation) return;
-        if (this.state === "interrupted") {
-          this.state = "live";
-          this.emit();
-        }
-      });
-    }
-
-    this.state = "live";
-    this.emit();
-    return stream;
-  }
-
-  /** True when the hardware accepted the zoom factor. */
-  async applyHardwareZoom(value: number) {
-    const range = this.capabilities?.zoom;
-    if (!this.track || !range) return false;
-    const clamped = Math.min(range.max, Math.max(range.min, value));
-    try {
-      await this.track.applyConstraints({ advanced: [{ zoom: clamped } as ExtendedConstraint] });
-      this.hardwareZoom = clamped;
-      this.emit();
-      return true;
-    } catch {
-      return false;
+      const e = err as { name?: string; message?: string };
+      this.error = e.name ?? e.message ?? "error";
+      this.notify();
     }
   }
 
-  async setTorch(on: boolean) {
-    if (!this.track || !this.capabilities?.torch) return false;
+  public stop(): void {
+    if (this.liveStream) {
+      for (const track of this.liveStream.getTracks()) {
+        track.stop();
+      }
+      this.liveStream = null;
+    }
+    this.telemetrySession.stopTelemetry();
+    this.state = "idle";
+    this.capabilities = null;
+    this.notify();
+  }
+
+  public async applyHardwareZoom(zoom: number): Promise<void> {
+    const track = this.liveStream?.getVideoTracks()[0];
+    if (!track || typeof track.applyConstraints !== "function") return;
     try {
-      await this.track.applyConstraints({ advanced: [{ torch: on } as ExtendedConstraint] });
-      return true;
+      const advanced = [{ zoom }] as unknown as MediaTrackConstraintSet[];
+      await track.applyConstraints({ advanced });
     } catch {
-      return false;
+      // Hardware zoom not supported
     }
   }
 
-  async setFocusMode(mode: string) {
-    if (!this.track || !this.capabilities?.focusModes.includes(mode)) return false;
+  public async setTorch(on: boolean): Promise<void> {
+    const track = this.liveStream?.getVideoTracks()[0];
+    if (!track || typeof track.applyConstraints !== "function") return;
     try {
-      await this.track.applyConstraints({ advanced: [{ focusMode: mode } as ExtendedConstraint] });
-      return true;
+      const advanced = [{ torch: on }] as unknown as MediaTrackConstraintSet[];
+      await track.applyConstraints({ advanced });
     } catch {
-      return false;
+      // Torch not supported
     }
+  }
+
+  public async setFocusMode(mode: string): Promise<void> {
+    const track = this.liveStream?.getVideoTracks()[0];
+    if (!track || typeof track.applyConstraints !== "function") return;
+    try {
+      const advanced = [{ focusMode: mode }] as unknown as MediaTrackConstraintSet[];
+      await track.applyConstraints({ advanced });
+    } catch {
+      // Focus mode not supported
+    }
+  }
+
+  public getTelemetry(): InscriptionOrientation {
+    return this.telemetrySession.getTelemetry();
+  }
+
+  public buildMetadata(geoCoords?: {
+    lat: number;
+    lon: number;
+    altitudeM: number;
+  }): ArchaeologicalCaptureMetadata {
+    return this.telemetrySession.buildMetadata(geoCoords);
   }
 }
 
-function probe(track: MediaStreamTrack): CameraCapabilities {
-  let caps: ExtendedCaps = {};
-  try {
-    caps = (track.getCapabilities?.() ?? {}) as ExtendedCaps;
-  } catch {
-    caps = {};
-  }
-  const settings = track.getSettings();
-  const zoom =
-    caps.zoom && typeof caps.zoom.min === "number" && caps.zoom.max > caps.zoom.min
-      ? { min: caps.zoom.min, max: caps.zoom.max, step: caps.zoom.step || 0.1 }
-      : null;
-  return {
-    zoom,
-    torch: caps.torch === true,
-    focusModes: Array.isArray(caps.focusMode) ? caps.focusMode : [],
-    exposureModes: Array.isArray(caps.exposureMode) ? caps.exposureMode : [],
-    width: settings.width ?? 0,
-    height: settings.height ?? 0,
-    label: track.label || "",
-    facing: (settings.facingMode as string | undefined) ?? null,
-  };
-}
-
-export const cameraSession = new Session();
+export const cameraSession = new CameraSessionManager();

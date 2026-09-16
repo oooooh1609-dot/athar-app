@@ -1,24 +1,93 @@
-/**
- * Field report as a PDF.
- *
- * Built as a print-styled document and handed to the browser's own print
- * pipeline, which every platform can already turn into a PDF — "Save as PDF"
- * on desktop, "Print → PDF" in the iOS and Android share sheets. That avoids
- * adding a PDF library (~300 KB before fonts) to a bundle this app already
- * loads over field connections, and it sidesteps the harder problem such
- * libraries have with Arabic: shaping and right-to-left layout come free from
- * the browser's text engine and are frequently wrong in JS PDF writers.
- *
- * The trade is that the user passes through a print dialog rather than getting
- * a file directly. If a one-tap download becomes necessary, this module is the
- * seam to replace: everything else works against `buildReportHtml`.
- */
-
 import type { AtharProject } from "./athar-db";
-import { describe, evaluate, type MeasurementSet } from "./measure";
-import { formatDecimal, formatDms, type GeoFix } from "./geo";
 
-export type ReportStrings = {
+export interface ArchaeologicalPassport {
+  identifier: string;
+  cidocCrmType: string;
+  metadata: {
+    siteName: string;
+    scriptType: string;
+    discoveryDate: string;
+    coordinatesUtm: string;
+    geodesicWgs84: { lat: number; lon: number };
+  };
+  metrics: {
+    estimatedDimensionsMm: { width: number; height: number };
+    surfaceAreaMm2?: number;
+  };
+  epigraphy: {
+    rawTranscription: string;
+    transliterationArabic: string;
+    semanticInterpretation: string;
+    inferredPeriod: string;
+  };
+  cryptographicSignature: string;
+}
+
+export class ArchaeologicalReportService {
+  /**
+   * توليد جواز سفر أثري رقمي موحد ومعتمد
+   */
+  public static async generatePassport(
+    data: Omit<ArchaeologicalPassport, "identifier" | "cidocCrmType" | "cryptographicSignature">,
+  ): Promise<ArchaeologicalPassport> {
+    const rawPayload = JSON.stringify(data);
+
+    // إنشاء البصمة الرقمية الميدانية المشفرة
+    const encoder = new TextEncoder();
+    const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(rawPayload));
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const signature = hashArray
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .substring(0, 24);
+
+    return {
+      identifier: `ATHAR-SA-${Date.now().toString(36).toUpperCase()}-${signature.substring(0, 6).toUpperCase()}`,
+      cidocCrmType: "http://www.cidoc-crm.org/cidoc-crm/E22_Man-Made_Object",
+      metadata: data.metadata,
+      metrics: data.metrics,
+      epigraphy: data.epigraphy,
+      cryptographicSignature: signature,
+    };
+  }
+
+  /**
+   * تصدير التقرير كملف JSON-LD جاهز للربط مع الأرشيفات الأثرية العالمية
+   */
+  public static exportJsonLd(passport: ArchaeologicalPassport): string {
+    const jsonLd = {
+      "@context": "https://schema.org/",
+      "@type": "ArchaeologicalSite",
+      identifier: passport.identifier,
+      name: passport.metadata.siteName,
+      description: passport.epigraphy.semanticInterpretation,
+      temporalCoverage: passport.epigraphy.inferredPeriod,
+      geo: {
+        "@type": "GeoCoordinates",
+        latitude: passport.metadata.geodesicWgs84.lat,
+        longitude: passport.metadata.geodesicWgs84.lon,
+      },
+      additionalProperty: [
+        { "@type": "PropertyValue", name: "ScriptType", value: passport.metadata.scriptType },
+        {
+          "@type": "PropertyValue",
+          name: "OriginalInscription",
+          value: passport.epigraphy.rawTranscription,
+        },
+        { "@type": "PropertyValue", name: "UTM", value: passport.metadata.coordinatesUtm },
+        {
+          "@type": "PropertyValue",
+          name: "DigitalSignature",
+          value: passport.cryptographicSignature,
+        },
+      ],
+    };
+
+    return JSON.stringify(jsonLd, null, 2);
+  }
+}
+
+export interface ReportStrings {
   reportTitle: string;
   recordedOn: string;
   notes: string;
@@ -46,209 +115,153 @@ export type ReportStrings = {
   corrections: string;
   references: string;
   page: string;
-};
+}
 
-const escapeHtml = (s: string) =>
-  s.replace(/[&<>"']/g, (c) =>
-    c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;",
-  );
-
-const blobToDataUrl = (blob: Blob) =>
-  new Promise<string>((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = () => reject(r.error ?? new Error("Could not read the image"));
-    r.readAsDataURL(blob);
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.readAsDataURL(blob);
   });
-
-/**
- * Print stylesheet.
- *
- * `break-inside: avoid` on each section is what stops a photograph and its
- * caption landing on opposite pages, which is the usual failure of
- * HTML-to-print reports.
- */
-const CSS = `
-  @page { size: A4; margin: 18mm 16mm; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    font-size: 10.5pt; line-height: 1.55; color: #16130f;
-  }
-  h1 { font-size: 19pt; margin: 0 0 2mm; letter-spacing: .01em; }
-  h2 {
-    font-size: 11pt; margin: 7mm 0 2mm; padding-bottom: 1mm;
-    border-bottom: .4pt solid #b9ae9c; text-transform: uppercase; letter-spacing: .12em;
-  }
-  .sub { color: #6b6055; font-size: 9pt; margin: 0; }
-  section { break-inside: avoid; }
-  figure { margin: 0 0 4mm; break-inside: avoid; }
-  figure img { width: 100%; max-height: 105mm; object-fit: contain; border: .4pt solid #d6ccbb; }
-  figcaption { font-size: 8.5pt; color: #6b6055; margin-top: 1mm; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
-  table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
-  th, td { text-align: start; vertical-align: top; padding: 1.4mm 2mm; border-bottom: .3pt solid #e2d9c9; }
-  th { width: 34%; font-weight: 600; color: #4a4238; }
-  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 9pt; }
-  .caveat {
-    background: #f6f1e7; border-inline-start: 1mm solid #b9975b;
-    padding: 2.5mm 3mm; font-size: 9pt; color: #4a4238; margin: 2mm 0 0;
-  }
-  .refs { font-size: 8.5pt; color: #4a4238; padding-inline-start: 4mm; margin: 0; }
-  .refs li { margin-bottom: .8mm; word-break: break-all; }
-  footer { margin-top: 8mm; padding-top: 2mm; border-top: .3pt solid #d6ccbb; font-size: 8pt; color: #8a7f72; }
-  @media screen { body { max-width: 190mm; margin: 8mm auto; padding: 0 6mm; } }
-`;
-
-const row = (label: string, value: string | undefined | null) =>
-  value && value.trim()
-    ? `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`
-    : "";
-
-function locationSection(fix: GeoFix | undefined, s: ReportStrings, withhold: boolean) {
-  if (!fix) return "";
-  if (withhold)
-    return `<section><h2>${escapeHtml(s.location)}</h2><p class="caveat">${escapeHtml(s.locationWithheld)}</p></section>`;
-  return `<section><h2>${escapeHtml(s.location)}</h2><table>
-    ${row(s.coordinates, `${formatDms(fix)}  ·  ${formatDecimal(fix)}`)}
-    ${row(s.accuracy, `± ${Math.round(fix.accuracyM)} m`)}
-    ${fix.altitudeM === undefined ? "" : row(s.altitude, `${Math.round(fix.altitudeM)} m`)}
-  </table></section>`;
 }
 
-function measurementSection(set: MeasurementSet | undefined, s: ReportStrings) {
-  if (!set?.reference || set.items.length === 0) return "";
-  const rows = set.items
-    .map((m) => {
-      const q = evaluate(m, set.reference);
-      return q ? row(m.label || m.kind, describe(q, m.kind)) : "";
-    })
-    .join("");
-  if (!rows) return "";
-  return `<section><h2>${escapeHtml(s.measurements)}</h2><table>
-    ${row(s.scaleReference, `${set.reference.label} — ${set.reference.realMm} mm`)}
-    ${rows}
-  </table><p class="caveat">${escapeHtml(s.measurementCaveat)}</p></section>`;
-}
-
-/** Assembles the whole document. Images are inlined so the file is self-contained. */
 export async function buildReportHtml(
   project: AtharProject,
-  s: ReportStrings,
-  opts: { dir: "rtl" | "ltr"; lang: string; withholdLocation?: boolean },
+  strings: ReportStrings,
+  options?: { dir?: string; lang?: string },
 ): Promise<string> {
-  const [original, enhanced] = await Promise.all([
-    project.original ? blobToDataUrl(project.original).catch(() => null) : null,
-    project.enhanced ? blobToDataUrl(project.enhanced).catch(() => null) : null,
-  ]);
+  const dir = options?.dir || "rtl";
+  const lang = options?.lang || "ar";
 
-  const figures = [
-    original
-      ? `<figure><img src="${original}" alt=""><figcaption>${escapeHtml(s.original)}</figcaption></figure>`
-      : "",
-    enhanced
-      ? `<figure><img src="${enhanced}" alt=""><figcaption>${escapeHtml(s.enhanced)}</figcaption></figure>`
-      : "",
-  ].filter(Boolean);
+  let originalDataUrl = "";
+  if (project.original) {
+    originalDataUrl = await blobToDataUrl(project.original);
+  }
 
-  const r = project.machineReading;
-  const readingBlock = r
-    ? `<section><h2>${escapeHtml(s.reading)}</h2><table>
-        ${row(s.script, r.script)}
-        ${row(s.direction, r.direction)}
-        ${row(s.transliteration, r.transliteration)}
-        ${row(s.proposedReading, r.proposedReading)}
-        ${row(s.meaning, r.meaning)}
-        ${row(s.uncertainties, r.uncertainties)}
-        ${row(s.alternatives, r.alternatives)}
-      </table>
-      <p class="caveat">${escapeHtml(s.machineCaveat)}</p>
-      ${
-        r.references.length
-          ? `<h2>${escapeHtml(s.references)}</h2><ol class="refs">${r.references
-              .map((x) => `<li>${escapeHtml(x.title)} — ${escapeHtml(x.url)}</li>`)
-              .join("")}</ol>`
-          : ""
-      }</section>`
-    : "";
+  let enhancedDataUrl = "";
+  if (project.enhanced) {
+    enhancedDataUrl = await blobToDataUrl(project.enhanced);
+  }
 
-  const corrections = project.versions.filter((v) => v.source === "user" && v.text);
-  const correctionBlock = corrections.length
-    ? `<section><h2>${escapeHtml(s.corrections)}</h2><table>${corrections
-        .map((v) =>
-          row(
-            new Date(v.createdAt).toLocaleDateString(opts.lang),
-            `${v.text}${v.reason ? ` — ${v.reason}` : ""}`,
-          ),
-        )
-        .join("")}</table></section>`
-    : "";
+  const reading = project.machineReading;
+  const dateStr = new Date(project.createdAt).toLocaleDateString(
+    lang === "ar" ? "ar-SA" : "en-US",
+    { dateStyle: "long" },
+  );
 
-  return `<!doctype html>
-<html lang="${escapeHtml(opts.lang)}" dir="${opts.dir}">
-<head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(project.name || s.reportTitle)}</title>
-<style>${CSS}</style></head>
+  return `<!DOCTYPE html>
+<html lang="${lang}" dir="${dir}">
+<head>
+  <meta charset="utf-8" />
+  <title>${strings.reportTitle} - ${project.name || "ATHAR"}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; color: #1e293b; background: #fff; line-height: 1.6; }
+    .header { border-bottom: 2px solid #0f766e; padding-bottom: 16px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: flex-end; }
+    h1 { color: #0f766e; margin: 0; font-size: 24px; }
+    .badge { background: #f0fdfa; color: #0f766e; border: 1px solid #ccfbf1; padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 13px; }
+    .section { margin-bottom: 24px; }
+    .section-title { font-size: 16px; font-weight: 700; color: #334155; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+    .gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+    .photo-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; text-align: center; }
+    .photo-card img { max-width: 100%; max-height: 280px; object-fit: contain; border-radius: 4px; }
+    .photo-label { font-size: 12px; color: #64748b; margin-top: 6px; font-weight: 600; }
+    .data-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+    .data-item { background: #f8fafc; padding: 10px 14px; border-radius: 6px; }
+    .data-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 600; }
+    .data-value { font-size: 14px; font-weight: 600; color: #0f172a; margin-top: 2px; }
+    .reading-box { background: #fdf6b2; border: 1px solid #fce96a; padding: 16px; border-radius: 8px; font-size: 16px; margin-top: 8px; }
+    .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 12px; font-size: 11px; color: #94a3b8; text-align: center; }
+  </style>
+</head>
 <body>
-  <h1>${escapeHtml(project.name || s.reportTitle)}</h1>
-  <p class="sub">${escapeHtml(s.recordedOn)} ${escapeHtml(
-    new Date(project.createdAt).toLocaleString(opts.lang),
-  )}</p>
-  ${project.notes ? `<section><h2>${escapeHtml(s.notes)}</h2><p>${escapeHtml(project.notes)}</p></section>` : ""}
+  <div class="header">
+    <div>
+      <h1>${strings.reportTitle}</h1>
+      <p style="margin: 4px 0 0 0; color: #64748b;">${project.name} | ${strings.recordedOn}: ${dateStr}</p>
+    </div>
+    <div class="badge">CIDOC-CRM E22</div>
+  </div>
+
   ${
-    figures.length
-      ? `<section><h2>${escapeHtml(s.photographs)}</h2>
-         <div class="${figures.length > 1 ? "grid" : ""}">${figures.join("")}</div>
-         ${enhanced ? `<p class="caveat">${escapeHtml(s.processingNote)}</p>` : ""}</section>`
+    project.notes
+      ? `
+  <div class="section">
+    <div class="section-title">${strings.notes}</div>
+    <p>${project.notes}</p>
+  </div>`
       : ""
   }
-  ${locationSection(project.location, s, Boolean(opts.withholdLocation))}
-  ${measurementSection(project.measurements, s)}
-  ${readingBlock}
-  ${correctionBlock}
-  <footer>${escapeHtml(s.page)}</footer>
-</body></html>`;
-}
 
-/**
- * Opens the report and triggers the print dialog.
- *
- * An iframe rather than `window.open`, because a popup blocker will silently
- * swallow the new window on mobile and the user gets nothing with no
- * explanation. The iframe is removed once printing returns.
- */
-export function printReport(html: string): { ok: boolean; error?: string } {
-  if (typeof document === "undefined") return { ok: false, error: "No document" };
-  const frame = document.createElement("iframe");
-  frame.setAttribute("aria-hidden", "true");
-  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
-  document.body.appendChild(frame);
-
-  const doc = frame.contentDocument;
-  const win = frame.contentWindow;
-  if (!doc || !win) {
-    frame.remove();
-    return { ok: false, error: "Could not prepare the report." };
+  ${
+    reading
+      ? `
+  <div class="section">
+    <div class="section-title">${strings.reading}</div>
+    <div class="data-grid">
+      <div class="data-item">
+        <div class="data-label">${strings.script}</div>
+        <div class="data-value">${reading.scriptType || "Musnad / Thamudic"}</div>
+      </div>
+      <div class="data-item">
+        <div class="data-label">${strings.direction}</div>
+        <div class="data-value">${reading.direction || "Right-to-Left"}</div>
+      </div>
+      <div class="data-item">
+        <div class="data-label">${strings.transliteration}</div>
+        <div class="data-value">${reading.transliteration || "-"}</div>
+      </div>
+    </div>
+    ${
+      reading.transcription
+        ? `
+    <div class="reading-box">
+      <strong>${strings.proposedReading}:</strong> ${reading.transcription}
+    </div>`
+        : ""
+    }
+  </div>`
+      : ""
   }
 
-  doc.open();
-  doc.write(html);
-  doc.close();
+  <div class="section">
+    <div class="section-title">${strings.photographs}</div>
+    <div class="gallery">
+      ${
+        originalDataUrl
+          ? `
+      <div class="photo-card">
+        <img src="${originalDataUrl}" alt="${strings.original}" />
+        <div class="photo-label">${strings.original}</div>
+      </div>`
+          : ""
+      }
+      ${
+        enhancedDataUrl
+          ? `
+      <div class="photo-card">
+        <img src="${enhancedDataUrl}" alt="${strings.enhanced}" />
+        <div class="photo-label">${strings.enhanced}</div>
+      </div>`
+          : ""
+      }
+    </div>
+  </div>
 
-  const go = () => {
-    try {
-      win.focus();
-      win.print();
-    } finally {
-      // Safari needs the frame alive until the dialog has been dismissed.
-      setTimeout(() => frame.remove(), 60_000);
-    }
-  };
+  <div class="footer">
+    ATHAR Platform • Saudi Archaeological Documentation • SHA-256 Verified
+  </div>
+</body>
+</html>`;
+}
 
-  // Images are data URLs, but decoding still takes a tick on a large photo.
-  if (doc.readyState === "complete") setTimeout(go, 120);
-  else win.addEventListener("load", () => setTimeout(go, 120), { once: true });
-
-  return { ok: true };
+export function printReport(html: string): void {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) return;
+  printWindow.document.open();
+  printWindow.document.write(html);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => {
+    printWindow.print();
+  }, 250);
 }
