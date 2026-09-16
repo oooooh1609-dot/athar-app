@@ -60,6 +60,7 @@ import { downloadBlob } from "@/lib/object-url";
 import type { MeasurementSet } from "@/lib/measure";
 import { LANGS, useI18n } from "@/lib/i18n";
 import { OnDevice3DEngine } from "@/lib/on-device-3d";
+import { Server3DService } from "@/lib/server-3d-api";
 
 import { CameraButton, type CapturedPhoto } from "./CameraCapture";
 
@@ -135,7 +136,11 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
 
   /* enhancement */
   const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
+  const [isProcessing3D, setIsProcessing3D] = useState(false);
+  const isLockedRef = useRef(false);
   const engine3DRef = useRef<OnDevice3DEngine | null>(null);
+  const server3DRef = useRef<Server3DService>(new Server3DService());
+  const canvas2DRef = useRef<HTMLCanvasElement | null>(null);
   const canvas3DRef = useRef<HTMLCanvasElement | null>(null);
   const [mode, setMode] = useState<EnhanceMode>("carved");
   const [params, setParams] = useState<EnhanceParams>(DEFAULTS.carved);
@@ -426,48 +431,94 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, params.strength, params.clipLimit, params.sharpen, params.denoise, params.grayscale]);
 
-  // تشغيل محرك التجسيم المحلي على الجوال (On-Device 3D Relief) عند اختيار نمط 3D
+  // تحديث محتوى الكانفاس الثنائي الدائم (2D Canvas) تلقائياً عند جاهزية الصورة المعززة
   useEffect(() => {
-    let active = true;
-    if (viewMode === "3d" && canvas3DRef.current && afterUrl) {
-      if (!engine3DRef.current) {
-        engine3DRef.current = new OnDevice3DEngine();
-      }
-      const imageEl = new Image();
-      imageEl.crossOrigin = "anonymous";
-      imageEl.onload = () => {
-        if (!active || !canvas3DRef.current || !engine3DRef.current) return;
-        engine3DRef.current
-          .init(canvas3DRef.current, imageEl, {
-            reliefDepth: Math.max(0.05, Math.min(0.6, (params.strength || 0.8) * 0.25)),
-            roughness: 0.86,
-            metalness: 0.12,
-            lightIntensity: 1.8,
-          })
-          .catch((err) => console.error("3D Engine Init Error:", err));
-      };
-      imageEl.src = afterUrl;
-    }
-
-    return () => {
-      active = false;
-      if (engine3DRef.current && viewMode !== "3d") {
-        engine3DRef.current.dispose();
-        engine3DRef.current = null;
+    if (!afterUrl || !canvas2DRef.current) return;
+    const canvas2D = canvas2DRef.current;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      canvas2D.width = img.naturalWidth || img.width;
+      canvas2D.height = img.naturalHeight || img.height;
+      const ctx = canvas2D.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas2D.width, canvas2D.height);
+        ctx.drawImage(img, 0, 0);
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, afterUrl]);
+    img.src = afterUrl;
+  }, [afterUrl]);
+
+  // دالة التجسيم الموحدة مع سباق الوقت (12s Timeout) والتحويل التلقائي للجوال
+  const executeReconstruction = useCallback(async () => {
+    if (isLockedRef.current) return;
+
+    const canvas2D = canvas2DRef.current;
+    const canvas3D = canvas3DRef.current;
+
+    // 1. فحص سلامة عناصر الـ DOM
+    if (!canvas2D || !canvas3D) {
+      console.warn("الكانفاسات غير جاهزة في الواجهة بعد.");
+      return;
+    }
+
+    // 2. التحقق من وجود صورة مرسومة بالفعل
+    if (canvas2D.width === 0 || canvas2D.height === 0) {
+      console.warn("الكانفاس الثنائي فارغ، يرجى التقاط أو تحديد صورة أولاً.");
+      return;
+    }
+
+    if (!engine3DRef.current) {
+      engine3DRef.current = new OnDevice3DEngine();
+    }
+
+    isLockedRef.current = true;
+    setIsProcessing3D(true);
+
+    try {
+      // 3. سباق مع الوقت (Timeout 12s): إذا تأخر السيرفر عن 12 ثانية ينتقل تلقائياً لمحرك الجوال
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("SERVER_TIMEOUT")), 12000),
+      );
+
+      const modelUrl = await Promise.race([
+        server3DRef.current.generate3D(canvas2D),
+        timeoutPromise,
+      ]);
+
+      // 4. عرض المجسم الحجمي 360° المستلم من السيرفر
+      await engine3DRef.current.loadArtifactModel(canvas3D, modelUrl);
+    } catch (error) {
+      // 5. مسار الطوارئ الميداني (Offline / Timeout Fallback)
+      console.warn("تم تفعيل التجسيم المحلي على معالج الجوال (Off-grid Fallback):", error);
+      await engine3DRef.current.init(canvas3D, canvas2D, {
+        reliefDepth: Math.max(0.05, Math.min(0.6, (params.strength || 0.8) * 0.28)),
+        roughness: 0.85,
+        metalness: 0.15,
+        lightIntensity: 1.8,
+      });
+    } finally {
+      setIsProcessing3D(false);
+      isLockedRef.current = false;
+    }
+  }, [params.strength]);
+
+  // تشغيل التجسيم تلقائياً بمجرد اختيار المستخدم نمط الـ 3D
+  useEffect(() => {
+    if (viewMode === "3d") {
+      void executeReconstruction();
+    }
+  }, [viewMode, executeReconstruction]);
 
   // تحديث عمق النقر الحجري لحظياً عند تحريك شريط الشدة
   useEffect(() => {
     if (viewMode === "3d" && engine3DRef.current) {
-      const depth = Math.max(0.05, Math.min(0.6, (params.strength || 0.8) * 0.25));
+      const depth = Math.max(0.05, Math.min(0.6, (params.strength || 0.8) * 0.28));
       engine3DRef.current.updateReliefDepth(depth);
     }
   }, [params.strength, viewMode]);
 
-  // تفريغ الذاكرة وموارد WebGL بالكامل عند مغادرة الشاشة
+  // تفريغ ذاكرة الرسوميات عند إغلاق الشاشة
   useEffect(() => {
     return () => {
       if (engine3DRef.current) {
@@ -957,19 +1008,45 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
                 </Button>
               </div>
 
-              {viewMode === "2d" ? (
-                <BeforeAfter before={beforeUrl} after={afterUrl} />
-              ) : (
-                <div className="relative overflow-hidden rounded-xl border border-border bg-muted">
-                  <canvas
-                    ref={canvas3DRef}
-                    className="block h-[50vh] min-h-[300px] w-full touch-none select-none"
-                  />
-                  <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded-md bg-background/80 px-2 py-1 text-center text-xs text-muted-foreground backdrop-blur">
+              {/* حاوية العرض المتطورة للقطعة الأثرية بتقنية الطبقات المتراكبة */}
+              <div className="relative w-full min-h-[380px] sm:min-h-[440px] flex items-center justify-center bg-stone-900/10 rounded-2xl overflow-hidden border border-black/5 shadow-inner">
+                {/* 1. كانفاس المعاينة والأصل (2D) - يبقى نشطاً دائماً */}
+                <div
+                  className={`w-full p-2 transition-opacity duration-300 ${
+                    viewMode === "3d" ? "opacity-0 pointer-events-none" : "opacity-100"
+                  }`}
+                >
+                  <BeforeAfter before={beforeUrl} after={afterUrl} />
+                  <canvas ref={canvas2DRef} className="hidden" />
+                </div>
+
+                {/* 2. كانفاس التجسيم ثلاثي الأبعاد (3D) - يتراكب بدقة فوق الكانفاس الأول */}
+                <canvas
+                  ref={canvas3DRef}
+                  className={`absolute inset-0 h-full w-full transition-opacity duration-300 ${
+                    viewMode === "3d"
+                      ? "pointer-events-auto opacity-100"
+                      : "pointer-events-none opacity-0"
+                  }`}
+                />
+
+                {/* دليل إرشادي للتفاعل مع المجسم في نمط 3D */}
+                {viewMode === "3d" && !isProcessing3D && (
+                  <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded-md bg-background/80 px-2 py-1 text-center text-xs text-muted-foreground backdrop-blur z-20">
                     اسحب لتدوير الصخرة · إصبعين للتكبير · تجسيم فوري محلي 60fps
                   </div>
-                </div>
-              )}
+                )}
+
+                {/* 3. مؤشر معالجة ذكي وهادئ (يظهر فقط أثناء بناء النموذج) */}
+                {isProcessing3D && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm z-30 transition-all">
+                    <div className="w-9 h-9 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mb-2" />
+                    <p className="text-white text-xs font-medium tracking-wide">
+                      جاري بناء المجسم الهندسي للقطعة...
+                    </p>
+                  </div>
+                )}
+              </div>
               {mode === "pigments" && (
                 <Note>
                   Pigment mode output is enhanced / false colour. The colours are the result of a
