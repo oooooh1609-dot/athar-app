@@ -1,5 +1,13 @@
 import type { EnhanceMode, EnhanceParams } from "./pixel-kernels.js";
-export { decorrelationStretch, decorrelationStretchFast } from "./pixel-kernels.js";
+export {
+  decorrelationStretch,
+  decorrelationStretchFast,
+  decorrelationStretchCRGB,
+  decorrelationStretchLDS,
+  decorrelationStretchYDS,
+  applySyntheticPolarization,
+  applyAdvancedDStretch,
+} from "./pixel-kernels.js";
 
 export type { EnhanceMode, EnhanceParams };
 

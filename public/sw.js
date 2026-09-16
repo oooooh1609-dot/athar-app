@@ -138,13 +138,24 @@ self.addEventListener("message", (event) => {
   }
 });
 
-const isCacheable = (res) => res && res.status === 200 && res.type !== "opaque";
+const isCacheable = (res, req) => {
+  if (!res || res.status !== 200 || res.type === "opaque") return false;
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+  const url = req ? new URL(req.url) : null;
+  if (
+    url &&
+    /\.(?:js|mjs|css|wasm|glb|json|woff2?|png|jpe?g|webp|svg|gif|ico)$/i.test(url.pathname)
+  ) {
+    if (contentType.includes("text/html")) return false;
+  }
+  return true;
+};
 
 async function handleNavigate(event) {
   try {
     const preloaded = await event.preloadResponse;
     const res = preloaded || (await fetch(event.request));
-    if (isCacheable(res)) {
+    if (isCacheable(res, event.request)) {
       const copy = res.clone();
       void caches.open(SHELL).then((c) => c.put(event.request, copy));
     }
@@ -169,25 +180,49 @@ async function handleAsset(request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
   if (cached) {
-    void fetch(request)
-      .then((res) => {
-        if (isCacheable(res)) void cache.put(request, res);
-      })
-      .catch(() => {});
-    return cached;
+    const cachedType = (cached.headers.get("content-type") || "").toLowerCase();
+    if (
+      !request.url.includes(".html") &&
+      /\.(?:js|mjs|css|wasm|glb)$/i.test(new URL(request.url).pathname) &&
+      cachedType.includes("text/html")
+    ) {
+      // Corrupt cache entry containing HTML for a JS/CSS file — purge it
+      void cache.delete(request);
+    } else {
+      void fetch(request)
+        .then((res) => {
+          if (isCacheable(res, request)) void cache.put(request, res);
+        })
+        .catch(() => {});
+      return cached;
+    }
   }
   try {
     const res = await fetch(request);
-    if (isCacheable(res)) void cache.put(request, res.clone());
+    if (isCacheable(res, request)) void cache.put(request, res.clone());
     return res;
   } catch (err) {
     const fallback = await cache.match(request);
-    if (fallback) return fallback;
+    if (fallback) {
+      const fbType = (fallback.headers.get("content-type") || "").toLowerCase();
+      if (!fbType.includes("text/html")) return fallback;
+    }
     throw err;
   }
 }
 
 self.addEventListener("fetch", (event) => {
+  const host = self.location.hostname;
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host.endsWith(".run.app") ||
+    host.includes("ai.studio") ||
+    /\.lovable(project)?\.(app|dev)$/.test(host)
+  ) {
+    return;
+  }
+
   const url = new URL(event.request.url);
   const strategy = chooseStrategy(
     url,

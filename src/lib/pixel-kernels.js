@@ -46,79 +46,8 @@ function jacobiEigen(input) {
   return { values: new Float64Array([m[0], m[4], m[8]]), vectors: v };
 }
 
-export function decorrelationStretch(d, strength) {
+export function decorrelationStretchCRGB(d, strength, width, height) {
   const n = d.length / 4;
-  let mr = 0,
-    mg = 0,
-    mb = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    mr += d[i];
-    mg += d[i + 1];
-    mb += d[i + 2];
-  }
-  mr /= n;
-  mg /= n;
-  mb /= n;
-
-  let crr = 0,
-    cgg = 0,
-    cbb = 0,
-    crg = 0,
-    crb = 0,
-    cgb = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    const r = d[i] - mr,
-      g = d[i + 1] - mg,
-      b = d[i + 2] - mb;
-    crr += r * r;
-    cgg += g * g;
-    cbb += b * b;
-    crg += r * g;
-    crb += r * b;
-    cgb += g * b;
-  }
-  const cov = new Float64Array([
-    crr / n,
-    crg / n,
-    crb / n,
-    crg / n,
-    cgg / n,
-    cgb / n,
-    crb / n,
-    cgb / n,
-    cbb / n,
-  ]);
-
-  const { values, vectors: V } = jacobiEigen(cov);
-  const targetSd = 42 + 26 * strength;
-  const maxGain = 1 + 9 * strength;
-  const noiseFloor = 1.6; // don't amplify components that carry only sensor noise
-  const gain = new Float64Array(3);
-  for (let k = 0; k < 3; k++) {
-    const s = Math.sqrt(Math.max(values[k], 0));
-    gain[k] = s < noiseFloor ? 1 : Math.min(maxGain, targetSd / s);
-  }
-
-  for (let i = 0; i < d.length; i += 4) {
-    const r = d[i] - mr,
-      g = d[i + 1] - mg,
-      b = d[i + 2] - mb;
-    const p0 = V[0] * r + V[3] * g + V[6] * b;
-    const p1 = V[1] * r + V[4] * g + V[7] * b;
-    const p2 = V[2] * r + V[5] * g + V[8] * b;
-    const q0 = p0 * gain[0],
-      q1 = p1 * gain[1],
-      q2 = p2 * gain[2];
-    d[i] = V[0] * q0 + V[1] * q1 + V[2] * q2 + mr;
-    d[i + 1] = V[3] * q0 + V[4] * q1 + V[5] * q2 + mg;
-    d[i + 2] = V[6] * q0 + V[7] * q1 + V[8] * q2 + mb;
-  }
-}
-
-// الحفاظ الكامل على الحسابات الرياضية مع إضافة تخفيض الضغط الحسابي
-export function decorrelationStretchFast(d, strength, width, height) {
-  const n = d.length / 4;
-  // قراءة عينات سريعة بمعدل خطوة ذكي لحساب مصفوفة التغاير اللوني دون استهلاك الذاكرة
   const step = n > 500000 ? 4 : 1;
   let mr = 0,
     mg = 0,
@@ -165,16 +94,18 @@ export function decorrelationStretchFast(d, strength, width, height) {
   ]);
 
   const { values, vectors: V } = jacobiEigen(cov);
-  const targetSd = 42 + 26 * strength;
-  const maxGain = 1 + 9 * strength;
-  const noiseFloor = 1.6;
+  // معامل تضخيم التباين الذاتي المباشر من شريط الشدة
+  const gainFactor = 1.0 + 16.0 * strength;
+  const targetSd = 44 + 32 * strength;
+  const noiseFloor = 1.4;
   const gain = new Float64Array(3);
   for (let k = 0; k < 3; k++) {
     const s = Math.sqrt(Math.max(values[k], 0));
-    gain[k] = s < noiseFloor ? 1 : Math.min(maxGain, targetSd / s);
+    gain[k] = s < noiseFloor ? 1 : Math.min(gainFactor, targetSd / s);
   }
 
-  // تطبيق التمدد اللوني النهائي على كافة البكسلات بسرعة فائقة
+  // تطبيق التمدد اللوني المتخصص لرسوم المغرة الحمراء (CRGB / Redness)
+  // تظهر الصبغة المتلاشية باللون الأصفر المشع والخلفية الصخرية بالأزرق الداكن
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i] - mr,
       g = d[i + 1] - mg,
@@ -182,19 +113,152 @@ export function decorrelationStretchFast(d, strength, width, height) {
     const p0 = V[0] * r + V[3] * g + V[6] * b;
     const p1 = V[1] * r + V[4] * g + V[7] * b;
     const p2 = V[2] * r + V[5] * g + V[8] * b;
-    d[i] = Math.min(
-      255,
-      Math.max(0, V[0] * (p0 * gain[0]) + V[1] * (p1 * gain[1]) + V[2] * (p2 * gain[2]) + mr),
-    );
-    d[i + 1] = Math.min(
-      255,
-      Math.max(0, V[3] * (p0 * gain[0]) + V[4] * (p1 * gain[1]) + V[5] * (p2 * gain[2]) + mg),
-    );
-    d[i + 2] = Math.min(
-      255,
-      Math.max(0, V[6] * (p0 * gain[0]) + V[7] * (p1 * gain[1]) + V[8] * (p2 * gain[2]) + mb),
-    );
+
+    const q0 = p0 * gain[0];
+    const q1 = p1 * gain[1];
+    const q2 = p2 * gain[2];
+
+    const recR = V[0] * q0 + V[1] * q1 + V[2] * q2 + mr;
+    const recG = V[3] * q0 + V[4] * q1 + V[5] * q2 + mg;
+    const recB = V[6] * q0 + V[7] * q1 + V[8] * q2 + mb;
+
+    // قياس إشارة الصبغة الحمراء المغرية مقابل صخور الحجر
+    const redDiff = d[i] - (d[i + 1] * 0.55 + d[i + 2] * 0.45);
+    const pigmentBoost = Math.max(0, Math.min(1, (redDiff + 5) / 28));
+
+    // مزج الإسقاط اللوني: الصبغة مشعة (أصفر/برتقالي) والصخر أزرق كحلي داكن
+    const finalR =
+      pigmentBoost > 0.3
+        ? Math.min(255, recR * 1.15 + 45 * strength)
+        : Math.max(0, recR * 0.7 - 15);
+    const finalG =
+      pigmentBoost > 0.3 ? Math.min(255, recG * 1.1 + 30 * strength) : Math.max(0, recG * 0.85);
+    const finalB =
+      pigmentBoost > 0.3
+        ? Math.max(0, recB * 0.3 - 25)
+        : Math.min(255, recB * 1.25 + 35 * strength);
+
+    d[i] = Math.min(255, Math.max(0, finalR));
+    d[i + 1] = Math.min(255, Math.max(0, finalG));
+    d[i + 2] = Math.min(255, Math.max(0, finalB));
   }
+}
+
+// نمط LAB / LDS: لعزل النقوش المحفورة على الصخور الجيرية والرملية
+export function decorrelationStretchLDS(d, strength, width, height, params) {
+  const w = width || Math.round(Math.sqrt(d.length / 4));
+  const h = height || Math.round(d.length / 4 / w);
+  const n = w * h;
+
+  // استخراج الإضاءة L* وتحليل التباين التكيفي للثنايا والحفر
+  const y = new Float32Array(n);
+  const u = new Float32Array(n);
+  const v = new Float32Array(n);
+
+  let mu = 0,
+    mv = 0;
+  for (let i = 0; i < n; i++) {
+    const r = d[i * 4];
+    const g = d[i * 4 + 1];
+    const b = d[i * 4 + 2];
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    y[i] = luma;
+    const diffU = (b - luma) * 0.565;
+    const diffV = (r - luma) * 0.713;
+    u[i] = diffU;
+    v[i] = diffV;
+    mu += diffU;
+    mv += diffV;
+  }
+  mu /= n;
+  mv /= n;
+
+  // مصفوفة التغاير اللوني لطبقة الباتينا الصخرية الحجرية
+  let cuu = 0,
+    cvv = 0,
+    cuv = 0;
+  for (let i = 0; i < n; i++) {
+    const du = u[i] - mu;
+    const dv = v[i] - mv;
+    cuu += du * du;
+    cvv += dv * dv;
+    cuv += du * dv;
+  }
+  const covUV = new Float64Array([cuu / n, cuv / n, 0, cuv / n, cvv / n, 0, 0, 0, 1]);
+  const { values, vectors: V } = jacobiEigen(covUV);
+
+  const gainFactor = 1.0 + 12.0 * strength;
+  const targetSd = 38 + 24 * strength;
+  const g0 = Math.min(gainFactor, targetSd / Math.max(1.5, Math.sqrt(Math.max(values[0], 0))));
+  const g1 = Math.min(gainFactor, targetSd / Math.max(1.5, Math.sqrt(Math.max(values[1], 0))));
+
+  // تحسين تباين الحفر الحجري بواسطة CLAHE
+  const clip = params && params.clipLimit ? params.clipLimit : 2.5 + strength * 2.0;
+  const eqY = clahe(y, w, h, clip);
+
+  for (let i = 0; i < n; i++) {
+    const du = u[i] - mu;
+    const dv = v[i] - mv;
+    const p0 = V[0] * du + V[3] * dv;
+    const p1 = V[1] * du + V[4] * dv;
+    const q0 = p0 * g0;
+    const q1 = p1 * g1;
+    const recU = V[0] * q0 + V[1] * q1 + mu;
+    const recV = V[3] * q0 + V[4] * q1 + mv;
+
+    const baseL = eqY[i];
+    const r = baseL + 1.402 * recV;
+    const g = baseL - 0.344 * recU - 0.714 * recV;
+    const b = baseL + 1.772 * recU;
+
+    d[i * 4] = Math.min(255, Math.max(0, r));
+    d[i * 4 + 1] = Math.min(255, Math.max(0, g));
+    d[i * 4 + 2] = Math.min(255, Math.max(0, b));
+  }
+}
+
+// نمط YDS: لإبراز النقوش الداكنة المتآكلة على البازلت والسفع الصخري
+export function decorrelationStretchYDS(d, strength, width, height, params) {
+  const w = width || Math.round(Math.sqrt(d.length / 4));
+  const h = height || Math.round(d.length / 4 / w);
+  const n = w * h;
+  const y = new Float32Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const r = d[i * 4];
+    const g = d[i * 4 + 1];
+    const b = d[i * 4 + 2];
+    y[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+
+  // إبراز الحواف الداكنة المتآكلة
+  const blurred = blurY(y, w, h);
+  const clip = params && params.clipLimit ? params.clipLimit * 1.2 : 3.0 + strength * 2.5;
+  const enhancedY = clahe(y, w, h, clip);
+  const sharpGain = 1.0 + 10.0 * strength;
+
+  for (let i = 0; i < n; i++) {
+    const highPass = y[i] - blurred[i];
+    const val = Math.min(255, Math.max(0, enhancedY[i] + highPass * sharpGain * 0.4));
+    d[i * 4] = val;
+    d[i * 4 + 1] = val;
+    d[i * 4 + 2] = val;
+  }
+}
+
+// دالة التمدد اللوني السريع المتوافقة مع كافة الأنماط
+export function decorrelationStretchFast(d, strength, width, height, filterMode = "crgb") {
+  if (filterMode === "lds") {
+    decorrelationStretchLDS(d, strength, width, height);
+  } else if (filterMode === "yds") {
+    decorrelationStretchYDS(d, strength, width, height);
+  } else {
+    decorrelationStretchCRGB(d, strength, width, height);
+  }
+}
+
+export function decorrelationStretch(d, strength, filterMode = "crgb") {
+  decorrelationStretchFast(d, strength, undefined, undefined, filterMode);
 }
 
 function medianDenoiseY(y, w, h) {
@@ -342,4 +406,73 @@ export function carvedEnhance(d, w, h, p) {
       d[k * 4 + 2] = yv + 1.772 * cb;
     }
   }
+}
+
+/**
+ * عزل وهج شمس الصحراء والانعكاسات الحادة (Synthetic Cross-Polarization)
+ * تقوم الخوارزمية بفصل الانعكاس الضوئي المباشر للشمس عن الانعكاس اللوني الحقيقي للصخرة،
+ * مما يعيد إبراز تفاصيل الحفر والنقر التي طمسها السطوع الشديد.
+ *
+ * @param {ImageData | Uint8ClampedArray | { data: Uint8ClampedArray }} imageData - مصفوفة بكسلات الكانفاس النشطة
+ * @param {number} intensity - قوة الاستقطاب والعزل (من 0.0 إلى 1.0) - الافتراضي 0.75
+ * @param {number} threshold - عتبة رصد احتراق الضوء بالبكسل (من 0 إلى 255) - الافتراضي 190
+ * @returns {any} نفس الكائن بعد تصحيح البكسلات مباشرة في الذاكرة (In-place)
+ */
+export function applySyntheticPolarization(imageData, intensity = 0.75, threshold = 190) {
+  const data = imageData.data || imageData;
+  const len = data.length;
+  const alpha = Math.min(Math.max(intensity, 0), 1);
+
+  for (let i = 0; i < len; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+
+    const maxVal = Math.max(r, g, b);
+    const minVal = Math.min(r, g, b);
+
+    // التحقق من وصول البكسل لمرحلة الوهج الأبيض المشبع
+    if (maxVal > threshold) {
+      // قياس معامل التوهج؛ ضوء الشمس المباشر يرفع القيمة الصغرى (minVal) ويفقد الصخرة تباينها
+      const specularRatio = (minVal / 255) * ((maxVal - threshold) / (255 - threshold));
+      const specularComponent = specularRatio * 255 * alpha;
+
+      // طرح المركبة الضوئية المسببة للعمى اللوني لاستعادة صبغة الصخرة الأصلية
+      let nr = r - specularComponent;
+      let ng = g - specularComponent;
+      let nb = b - specularComponent;
+
+      // موازنة ديناميكية للسطوع لمنع سواد المنطقة المعالجة واستعادة حواف النقر الأثري
+      const gain = 1 + specularRatio * alpha * 0.4;
+      nr *= gain;
+      ng *= gain;
+      nb *= gain;
+
+      data[i] = Math.min(255, Math.max(0, nr));
+      data[i + 1] = Math.min(255, Math.max(0, ng));
+      data[i + 2] = Math.min(255, Math.max(0, nb));
+    }
+  }
+
+  return imageData;
+}
+
+/**
+ * تطبيق تمديد التباين اللوني المتقدم (DStretch)
+ * يدعم معالجة قنوات RGB / LAB / LDS / CRGB / YDS مع الحفاظ على الألوان الأصلية للصخور
+ *
+ * @param {ImageData | Uint8ClampedArray | { data: Uint8ClampedArray, width?: number, height?: number }} imageData
+ * @param {'rgb' | 'lab' | 'crgb' | 'lds' | 'yds' | string} [mode='rgb']
+ * @param {number} [strength=1.2]
+ * @returns {any}
+ */
+export function applyAdvancedDStretch(imageData, mode = "rgb", strength = 1.2) {
+  const d = imageData.data || imageData;
+  const w = imageData.width || Math.round(Math.sqrt(d.length / 4));
+  const h = imageData.height || Math.round(d.length / 4 / w);
+
+  const filterMode = mode === "lab" ? "lds" : mode === "rgb" ? "crgb" : mode;
+  decorrelationStretchFast(d, strength, w, h, filterMode);
+
+  return imageData;
 }

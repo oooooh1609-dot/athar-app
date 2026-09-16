@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 import { shareCorrection } from "@/lib/corrections-client";
 import {
+  Boxes,
   Camera,
   Crop,
   Download,
@@ -36,6 +37,7 @@ import {
   canvasFromImageData,
   canvasToBlob,
   cropCanvas,
+  decorrelationStretchFast,
   enhanceImageData,
   fitScale,
   imageDataOf,
@@ -57,6 +59,7 @@ import { logActivity } from "@/lib/activity-log";
 import { downloadBlob } from "@/lib/object-url";
 import type { MeasurementSet } from "@/lib/measure";
 import { LANGS, useI18n } from "@/lib/i18n";
+import { OnDevice3DEngine } from "@/lib/on-device-3d";
 
 import { CameraButton, type CapturedPhoto } from "./CameraCapture";
 
@@ -128,8 +131,12 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
   const viewRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<{ x: number; y: number } | null>(null);
+  const cachedBaseDataRef = useRef<ImageData | null>(null);
 
   /* enhancement */
+  const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
+  const engine3DRef = useRef<OnDevice3DEngine | null>(null);
+  const canvas3DRef = useRef<HTMLCanvasElement | null>(null);
   const [mode, setMode] = useState<EnhanceMode>("carved");
   const [params, setParams] = useState<EnhanceParams>(DEFAULTS.carved);
   const [beforeUrl, setBeforeUrl] = useState<string | null>(null);
@@ -204,6 +211,7 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
   }, [rotated, displayScale]);
 
   const resetAll = () => {
+    cachedBaseDataRef.current = null;
     setSel(null);
     setBeforeUrl(null);
     setAfterUrl(null);
@@ -335,7 +343,15 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
     try {
       const s = fitScale(rect.w, rect.h, PREVIEW_MAX_PIXELS);
       const base = cropCanvas(rotated, rect.x, rect.y, rect.w, rect.h, s);
-      const enhanced = await enhanceImageData(imageDataOf(base), mode, params);
+      const baseImg = imageDataOf(base);
+      // الاحتفاظ بنسخة أساسية سريعة لتمكين الاستجابة اللحظية مع شريط الشدة
+      cachedBaseDataRef.current = new ImageData(
+        new Uint8ClampedArray(baseImg.data),
+        baseImg.width,
+        baseImg.height,
+      );
+
+      const enhanced = await enhanceImageData(baseImg, mode, params);
       const [beforeBlob, afterBlob] = await Promise.all([
         canvasToBlob(base, 0.9),
         canvasToBlob(canvasFromImageData(enhanced), 0.9),
@@ -349,7 +365,14 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
       });
       setAfterUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
-        return URL.createObjectURL(afterBlob);
+        const url = URL.createObjectURL(afterBlob);
+        try {
+          // حفظ الصورة المعززة كطبقة إكساء (Texture Map) للمجسم ثلاثي الأبعاد
+          sessionStorage.setItem("athar_enhanced_texture_data", url);
+        } catch (_err) {
+          // Ignore storage quota
+        }
+        return url;
       });
       setPreviewBlob(afterBlob);
     } catch (e) {
@@ -361,10 +384,98 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
 
   useEffect(() => {
     if (!rotated || !beforeUrl) return;
-    const t = setTimeout(() => void runPreview(), 350);
+
+    // استجابة لحظية فائقة لشريط الشدة عبر الحساب المباشر لمعامل تضخيم التباين الذاتي
+    if (cachedBaseDataRef.current) {
+      const w = cachedBaseDataRef.current.width;
+      const h = cachedBaseDataRef.current.height;
+      const copy = new Uint8ClampedArray(cachedBaseDataRef.current.data);
+      const filterMode = mode === "pigments" ? "crgb" : params.grayscale ? "yds" : "lds";
+      decorrelationStretchFast(copy, params.strength, w, h, filterMode);
+
+      const fastCanvas = document.createElement("canvas");
+      fastCanvas.width = w;
+      fastCanvas.height = h;
+      const ctx = fastCanvas.getContext("2d");
+      if (ctx) {
+        ctx.putImageData(new ImageData(copy, w, h), 0, 0);
+        fastCanvas.toBlob(
+          (b) => {
+            if (b) {
+              setAfterUrl((prev) => {
+                if (prev) URL.revokeObjectURL(prev);
+                const url = URL.createObjectURL(b);
+                try {
+                  sessionStorage.setItem("athar_enhanced_texture_data", url);
+                } catch (_err) {
+                  void _err;
+                }
+                return url;
+              });
+            }
+          },
+          "image/jpeg",
+          0.85,
+        );
+      }
+    }
+
+    // تحديث دقيق في خيط الويب لمعايرة الدقة والقياسات
+    const t = setTimeout(() => void runPreview(), 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, params.strength, params.clipLimit, params.sharpen, params.denoise, params.grayscale]);
+
+  // تشغيل محرك التجسيم المحلي على الجوال (On-Device 3D Relief) عند اختيار نمط 3D
+  useEffect(() => {
+    let active = true;
+    if (viewMode === "3d" && canvas3DRef.current && afterUrl) {
+      if (!engine3DRef.current) {
+        engine3DRef.current = new OnDevice3DEngine();
+      }
+      const imageEl = new Image();
+      imageEl.crossOrigin = "anonymous";
+      imageEl.onload = () => {
+        if (!active || !canvas3DRef.current || !engine3DRef.current) return;
+        engine3DRef.current
+          .init(canvas3DRef.current, imageEl, {
+            reliefDepth: Math.max(0.05, Math.min(0.6, (params.strength || 0.8) * 0.25)),
+            roughness: 0.86,
+            metalness: 0.12,
+            lightIntensity: 1.8,
+          })
+          .catch((err) => console.error("3D Engine Init Error:", err));
+      };
+      imageEl.src = afterUrl;
+    }
+
+    return () => {
+      active = false;
+      if (engine3DRef.current && viewMode !== "3d") {
+        engine3DRef.current.dispose();
+        engine3DRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, afterUrl]);
+
+  // تحديث عمق النقر الحجري لحظياً عند تحريك شريط الشدة
+  useEffect(() => {
+    if (viewMode === "3d" && engine3DRef.current) {
+      const depth = Math.max(0.05, Math.min(0.6, (params.strength || 0.8) * 0.25));
+      engine3DRef.current.updateReliefDepth(depth);
+    }
+  }, [params.strength, viewMode]);
+
+  // تفريغ الذاكرة وموارد WebGL بالكامل عند مغادرة الشاشة
+  useEffect(() => {
+    return () => {
+      if (engine3DRef.current) {
+        engine3DRef.current.dispose();
+        engine3DRef.current = null;
+      }
+    };
+  }, []);
 
   const renderEnhanced = useCallback(
     async (maxPixels: number) => {
@@ -829,7 +940,36 @@ export function Workspace({ intent }: { intent: "enhance" | "read" }) {
 
           {beforeUrl && afterUrl && (
             <div className="mt-4 space-y-3">
-              <BeforeAfter before={beforeUrl} after={afterUrl} />
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant={viewMode === "2d" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setViewMode("2d")}
+                >
+                  <ImageIcon /> 2D View
+                </Button>
+                <Button
+                  variant={viewMode === "3d" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setViewMode("3d")}
+                >
+                  <Boxes /> 3D Relief
+                </Button>
+              </div>
+
+              {viewMode === "2d" ? (
+                <BeforeAfter before={beforeUrl} after={afterUrl} />
+              ) : (
+                <div className="relative overflow-hidden rounded-xl border border-border bg-muted">
+                  <canvas
+                    ref={canvas3DRef}
+                    className="block h-[50vh] min-h-[300px] w-full touch-none select-none"
+                  />
+                  <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded-md bg-background/80 px-2 py-1 text-center text-xs text-muted-foreground backdrop-blur">
+                    اسحب لتدوير الصخرة · إصبعين للتكبير · تجسيم فوري محلي 60fps
+                  </div>
+                </div>
+              )}
               {mode === "pigments" && (
                 <Note>
                   Pigment mode output is enhanced / false colour. The colours are the result of a
