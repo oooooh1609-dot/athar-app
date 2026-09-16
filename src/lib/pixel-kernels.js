@@ -115,6 +115,88 @@ export function decorrelationStretch(d, strength) {
   }
 }
 
+// الحفاظ الكامل على الحسابات الرياضية مع إضافة تخفيض الضغط الحسابي
+export function decorrelationStretchFast(d, strength, width, height) {
+  const n = d.length / 4;
+  // قراءة عينات سريعة بمعدل خطوة ذكي لحساب مصفوفة التغاير اللوني دون استهلاك الذاكرة
+  const step = n > 500000 ? 4 : 1;
+  let mr = 0,
+    mg = 0,
+    mb = 0,
+    count = 0;
+
+  for (let i = 0; i < d.length; i += 4 * step) {
+    mr += d[i];
+    mg += d[i + 1];
+    mb += d[i + 2];
+    count++;
+  }
+  mr /= count;
+  mg /= count;
+  mb /= count;
+
+  let crr = 0,
+    cgg = 0,
+    cbb = 0,
+    crg = 0,
+    crb = 0,
+    cgb = 0;
+  for (let i = 0; i < d.length; i += 4 * step) {
+    const r = d[i] - mr,
+      g = d[i + 1] - mg,
+      b = d[i + 2] - mb;
+    crr += r * r;
+    cgg += g * g;
+    cbb += b * b;
+    crg += r * g;
+    crb += r * b;
+    cgb += g * b;
+  }
+  const cov = new Float64Array([
+    crr / count,
+    crg / count,
+    crb / count,
+    crg / count,
+    cgg / count,
+    cgb / count,
+    crb / count,
+    cgb / count,
+    cbb / count,
+  ]);
+
+  const { values, vectors: V } = jacobiEigen(cov);
+  const targetSd = 42 + 26 * strength;
+  const maxGain = 1 + 9 * strength;
+  const noiseFloor = 1.6;
+  const gain = new Float64Array(3);
+  for (let k = 0; k < 3; k++) {
+    const s = Math.sqrt(Math.max(values[k], 0));
+    gain[k] = s < noiseFloor ? 1 : Math.min(maxGain, targetSd / s);
+  }
+
+  // تطبيق التمدد اللوني النهائي على كافة البكسلات بسرعة فائقة
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i] - mr,
+      g = d[i + 1] - mg,
+      b = d[i + 2] - mb;
+    const p0 = V[0] * r + V[3] * g + V[6] * b;
+    const p1 = V[1] * r + V[4] * g + V[7] * b;
+    const p2 = V[2] * r + V[5] * g + V[8] * b;
+    d[i] = Math.min(
+      255,
+      Math.max(0, V[0] * (p0 * gain[0]) + V[1] * (p1 * gain[1]) + V[2] * (p2 * gain[2]) + mr),
+    );
+    d[i + 1] = Math.min(
+      255,
+      Math.max(0, V[3] * (p0 * gain[0]) + V[4] * (p1 * gain[1]) + V[5] * (p2 * gain[2]) + mg),
+    );
+    d[i + 2] = Math.min(
+      255,
+      Math.max(0, V[6] * (p0 * gain[0]) + V[7] * (p1 * gain[1]) + V[8] * (p2 * gain[2]) + mb),
+    );
+  }
+}
+
 function medianDenoiseY(y, w, h) {
   const out = new Float32Array(y.length);
   const win = new Float64Array(9);

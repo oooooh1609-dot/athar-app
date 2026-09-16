@@ -10,6 +10,13 @@ export type EnhanceParams = {
 
 export function decorrelationStretch(data: Uint8ClampedArray, strength: number): void;
 
+export function decorrelationStretchFast(
+  data: Uint8ClampedArray,
+  strength: number,
+  width?: number,
+  height?: number,
+): void;
+
 export function carvedEnhance(
   data: Uint8ClampedArray,
   width: number,

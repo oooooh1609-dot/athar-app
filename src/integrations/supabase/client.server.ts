@@ -151,3 +151,16 @@ export const supabaseAdmin = new Proxy({} as ReturnType<typeof createSupabaseAdm
     return Reflect.get(_supabaseAdmin, prop, receiver);
   },
 });
+
+// إضافة مغلف أمان في استدعاءات Supabase السيرفرية
+export async function safeDbQuery<T>(queryFn: () => Promise<T>, fallbackData: T): Promise<T> {
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  if (!url || url.includes("placeholder") || url.includes("disabled")) {
+    return fallbackData; // إرجاع مصفوفة فارغة أو قيمة بديلة دون إسقاط السيرفر
+  }
+  try {
+    return await queryFn();
+  } catch (_e) {
+    return fallbackData;
+  }
+}

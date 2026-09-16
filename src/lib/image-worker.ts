@@ -2,6 +2,7 @@
 import {
   carvedEnhance,
   decorrelationStretch,
+  decorrelationStretchFast,
   type EnhanceMode,
   type EnhanceParams,
 } from "./pixel-kernels.js";
@@ -21,7 +22,7 @@ self.onmessage = (ev: MessageEvent<Req>) => {
   try {
     const d = new Uint8ClampedArray(buffer);
     if (mode === "pigments") {
-      decorrelationStretch(d, params.strength);
+      decorrelationStretchFast(d, params.strength, width, height);
       if (params.sharpen > 0 || params.denoise) {
         // keep pigment mode chromatic: only optional mild luminance cleanup
         carvedEnhance(d, width, height, {

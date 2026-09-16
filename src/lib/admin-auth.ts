@@ -40,4 +40,5 @@ export {
   verifyAdminStatus,
   createAccessCode,
   validateAccessCode,
+  safeDbQuery,
 } from "./hybrid-access";

@@ -89,3 +89,21 @@ export async function validateAccessCode(inputCode: string): Promise<boolean> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return localCodes.some((item: any) => item.code === cleanCode);
 }
+
+// 4. مغلف أمان في استدعاءات Supabase السيرفرية
+export async function safeDbQuery<T>(queryFn: () => Promise<T>, fallbackData: T): Promise<T> {
+  const url =
+    (typeof process !== "undefined" &&
+      (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL)) ||
+    (typeof import.meta !== "undefined" &&
+      (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_SUPABASE_URL);
+
+  if (!url || url.includes("placeholder") || url.includes("disabled")) {
+    return fallbackData; // إرجاع مصفوفة فارغة أو قيمة بديلة دون إسقاط السيرفر
+  }
+  try {
+    return await queryFn();
+  } catch (_e) {
+    return fallbackData;
+  }
+}

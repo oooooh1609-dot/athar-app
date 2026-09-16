@@ -255,7 +255,7 @@ export function Capture3D() {
     return () => {
       stop = true;
     };
-  }, [jobId]);
+  }, [jobId, t]);
 
   const saveLocal = async () => {
     try {
