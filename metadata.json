@@ -1,0 +1,6 @@
+{
+  "name": "Athar — Inscription Field Toolkit",
+  "description": "Field toolkit for photographing archaeological objects, enhancing inscriptions, assisted script reading, and 3D capture.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,1 @@
+REVOKE EXECUTE ON FUNCTION public.glyph_dataset_counts(text) FROM PUBLIC;

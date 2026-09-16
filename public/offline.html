@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>أثر — دون اتصال</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 1.5rem;
+        background: #1e1a15;
+        color: #efe7da;
+        text-align: center;
+        font-family:
+          "IBM Plex Sans Arabic",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        line-height: 1.7;
+      }
+      .card {
+        max-width: 30rem;
+      }
+      .mark {
+        width: 4rem;
+        height: 4rem;
+        margin: 0 auto 1.25rem;
+        display: grid;
+        place-items: center;
+        border: 1px solid #5c5040;
+        border-radius: 1.1rem;
+        color: #e0a458;
+        font:
+          700 1.75rem/1 system-ui,
+          sans-serif;
+      }
+      h1 {
+        font-size: 1.3rem;
+        margin: 0 0 0.5rem;
+      }
+      p {
+        margin: 0 0 1rem;
+        color: #b6a893;
+        font-size: 0.95rem;
+      }
+      ul {
+        text-align: start;
+        color: #b6a893;
+        font-size: 0.9rem;
+        padding-inline-start: 1.2rem;
+        margin: 0 0 1.5rem;
+      }
+      li {
+        margin-bottom: 0.35rem;
+      }
+      button {
+        background: #e0a458;
+        color: #1e1a15;
+        border: 0;
+        border-radius: 0.7rem;
+        padding: 0.8rem 1.6rem;
+        font: 600 1rem inherit;
+        cursor: pointer;
+        min-height: 44px;
+      }
+      .en {
+        margin-top: 1.75rem;
+        padding-top: 1rem;
+        border-top: 1px solid #3a332a;
+        font-size: 0.85rem;
+        color: #8a7f72;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="mark" aria-hidden="true">A</div>
+      <h1>لا يوجد اتصال بالإنترنت</h1>
+      <p>هذه الصفحة لم تُفتح من قبل، فلا توجد نسخة محفوظة منها على جهازك.</p>
+      <ul>
+        <li>مشاريعك المحفوظة وصورك موجودة على الجهاز ولم تُفقد.</li>
+        <li>تحسين الصور والقياس والكتابة تعمل دون اتصال.</li>
+        <li>قراءة النقوش وإعادة البناء ثلاثي الأبعاد تحتاجان اتصالًا.</li>
+      </ul>
+      <button onclick="location.reload()">إعادة المحاولة</button>
+      <p class="en" dir="ltr" lang="en">
+        You are offline and this page has no saved copy. Your saved projects are safe on this
+        device; enhancement, measurement and writing still work.
+      </p>
+    </div>
+  </body>
+</html>
