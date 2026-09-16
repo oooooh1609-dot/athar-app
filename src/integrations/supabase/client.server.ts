@@ -32,35 +32,111 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
   };
 }
 
+function isValidHttpUrl(url?: string | null): boolean {
+  if (!url || typeof url !== "string") return false;
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isPlaceholder(url?: string | null, key?: string | null): boolean {
+  if (!url || !key) return true;
+  if (!isValidHttpUrl(url)) return true;
+  if (url.includes("placeholder.supabase.co")) return true;
+  if (key === "dummy-service-key" || key === "dummy-key" || key === "placeholder-service-key") {
+    return true;
+  }
+  return false;
+}
+
+function createMockAdminClient() {
+  const mockQueryBuilder = () => {
+    const builder = {
+      select: () => builder,
+      insert: async () => ({ data: null, error: null }),
+      update: async () => ({ data: null, error: null }),
+      delete: async () => ({ data: null, error: null }),
+      upsert: async () => ({ data: null, error: null }),
+      eq: () => builder,
+      neq: () => builder,
+      gt: () => builder,
+      lt: () => builder,
+      gte: () => builder,
+      lte: () => builder,
+      like: () => builder,
+      ilike: () => builder,
+      is: () => builder,
+      in: () => builder,
+      order: () => builder,
+      limit: () => builder,
+      range: () => builder,
+      single: async () => ({ data: null, error: null }),
+      maybeSingle: async () => ({ data: null, error: null }),
+      then: (onfulfilled?: (value: unknown) => unknown) =>
+        Promise.resolve({ data: [], error: null }).then(onfulfilled),
+    };
+    return builder;
+  };
+
+  return {
+    auth: {
+      admin: {
+        createUser: async () => ({ data: { user: null }, error: null }),
+        deleteUser: async () => ({ data: null, error: null }),
+        getUserById: async () => ({ data: { user: null }, error: null }),
+        listUsers: async () => ({ data: { users: [] }, error: null }),
+      },
+      getSession: async () => ({ data: { session: null }, error: null }),
+      getUser: async () => ({ data: { user: null }, error: null }),
+    },
+    from: () => mockQueryBuilder(),
+    rpc: async () => ({ data: null, error: null }),
+    storage: {
+      from: () => ({
+        upload: async () => ({ data: null, error: null }),
+        download: async () => ({ data: null, error: null }),
+        getPublicUrl: () => ({ data: { publicUrl: "" } }),
+      }),
+    },
+  } as unknown as ReturnType<typeof createClient<Database>>;
+}
+
 function createSupabaseAdminClient() {
   const SUPABASE_URL = process.env["SUPABASE_URL"];
   const SUPABASE_SERVICE_ROLE_KEY = process.env["SUPABASE_SERVICE_ROLE_KEY"];
 
   const fallbackUrl = "https://placeholder.supabase.co";
-  const fallbackKey = "placeholder-service-key";
-  const effectiveUrl = SUPABASE_URL || fallbackUrl;
+  const fallbackKey = "dummy-service-key";
+  const effectiveUrl = (isValidHttpUrl(SUPABASE_URL) ? SUPABASE_URL : fallbackUrl) as string;
   const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || fallbackKey;
 
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    const missing = [
-      ...(!SUPABASE_URL ? ["SUPABASE_URL"] : []),
-      ...(!SUPABASE_SERVICE_ROLE_KEY ? ["SUPABASE_SERVICE_ROLE_KEY"] : []),
-    ];
-    console.warn(
-      `[Supabase Admin] Missing Supabase environment variable(s): ${missing.join(", ")}. Using offline fallback client.`,
-    );
+  if (isPlaceholder(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)) {
+    return createMockAdminClient();
   }
 
-  return createClient<Database>(effectiveUrl, effectiveKey, {
-    global: {
-      fetch: createSupabaseFetch(effectiveKey),
-    },
-    auth: {
-      storage: undefined,
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
+  try {
+    return createClient<Database>(effectiveUrl, effectiveKey, {
+      global: {
+        fetch: createSupabaseFetch(effectiveKey),
+      },
+      auth: {
+        storage: undefined,
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+  } catch (err) {
+    console.warn(
+      "[Supabase Admin] Failed to initialize admin client with provided credentials:",
+      err,
+    );
+    return createMockAdminClient();
+  }
 }
 
 let _supabaseAdmin: ReturnType<typeof createSupabaseAdminClient> | undefined;

@@ -9,9 +9,7 @@
  * connected.
  */
 
-import { createClient } from "@supabase/supabase-js";
-
-import type { Database } from "@/integrations/supabase/types";
+import { supabase } from "@/integrations/supabase/client";
 import { plainForm } from "@/lib/reference-import.server";
 
 export type WordExample = {
@@ -40,19 +38,7 @@ export type WordEvidence = {
 };
 
 function publicClient() {
-  const key = process.env["SUPABASE_PUBLISHABLE_KEY"]!;
-  return createClient<Database>(process.env["SUPABASE_URL"]!, key, {
-    auth: { persistSession: false },
-    global: {
-      fetch: (input, init) => {
-        const h = new Headers(init?.headers);
-        if (key.startsWith("sb_") && h.get("Authorization") === `Bearer ${key}`)
-          h.delete("Authorization");
-        h.set("apikey", key);
-        return fetch(input, { ...init, headers: h });
-      },
-    },
-  });
+  return supabase;
 }
 
 /** Splits a reading into candidate words, dropping unread signs. */

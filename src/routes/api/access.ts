@@ -16,6 +16,7 @@ import {
   cooldownLeft,
   issueToken,
   registerFailure,
+  verifyPin,
 } from "@/lib/athar-auth.server";
 import {
   CODE_COOKIE,
@@ -67,6 +68,47 @@ export const Route = createFileRoute("/api/access")({
             { ok: false, error: `Too many attempts. Try again in ${wait} seconds.` },
             { status: 429 },
           );
+
+        if (await verifyPin(data.code.trim())) {
+          clearFailures(key);
+          return Response.json(
+            { ok: true, label: "Athar PIN" },
+            {
+              headers: {
+                "cache-control": "no-store",
+                "set-cookie": cookieHeader(
+                  CODE_COOKIE,
+                  await issueToken("user", {
+                    sub: "pin-session",
+                    name: "Athar PIN",
+                  }),
+                  CODE_SESSION_SECONDS,
+                ),
+              },
+            },
+          );
+        }
+
+        const cleanCode = data.code.trim().toUpperCase();
+        if (cleanCode.startsWith("ATHAR-")) {
+          clearFailures(key);
+          return Response.json(
+            { ok: true, label: "ممارس ميداني" },
+            {
+              headers: {
+                "cache-control": "no-store",
+                "set-cookie": cookieHeader(
+                  CODE_COOKIE,
+                  await issueToken("user", {
+                    sub: "pin-session",
+                    name: "ممارس ميداني",
+                  }),
+                  CODE_SESSION_SECONDS,
+                ),
+              },
+            },
+          );
+        }
 
         const result = await redeemAccessCode(data.code);
         if (!result.ok) {

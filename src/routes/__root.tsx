@@ -125,6 +125,11 @@ function RootShell({ children }: { children: ReactNode }) {
   return (
     <html lang="en" dir="ltr" suppressHydrationWarning>
       <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){if(typeof window!=='undefined'&&'serviceWorker' in navigator){var isIframe=false;try{isIframe=window.self!==window.top;}catch(e){isIframe=true;}var host=window.location.hostname||'';if(isIframe||host==='localhost'||host==='127.0.0.1'||host.indexOf('run.app')!==-1||host.indexOf('ai.studio')!==-1||/\\.lovable(project)?\\.(app|dev)$/.test(host)){navigator.serviceWorker.getRegistrations().then(function(regs){for(var i=0;i<regs.length;i++){regs[i].unregister();}});if('caches' in window){caches.keys().then(function(keys){for(var i=0;i<keys.length;i++){caches.delete(keys[i]);}});}}}})();`,
+          }}
+        />
         <HeadContent />
       </head>
       <body suppressHydrationWarning>

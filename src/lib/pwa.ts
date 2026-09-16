@@ -19,13 +19,30 @@ export type SwState = {
   applyUpdate: () => void;
 };
 
-const shouldRegister = () =>
-  typeof window !== "undefined" &&
-  "serviceWorker" in navigator &&
-  window.location.protocol === "https:" &&
-  // localhost is served over http in development, and the check above already
-  // excludes it; this second one keeps a worker out of preview sandboxes.
-  !/\.lovable(project)?\.(app|dev)$/.test(window.location.hostname);
+export const shouldRegister = () => {
+  if (typeof window === "undefined" || !("serviceWorker" in navigator)) return false;
+  // Never register in development mode
+  if (import.meta.env.DEV) return false;
+  if (window.location.protocol !== "https:") return false;
+  // Inside an iframe (e.g. AI Studio preview, embeds), service workers
+  // cause module script import failures and partitioned storage blocks.
+  try {
+    if (window.self !== window.top) return false;
+  } catch {
+    return false;
+  }
+  const hostname = window.location.hostname;
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname.endsWith(".run.app") ||
+    hostname.includes("ai.studio") ||
+    /\.lovable(project)?\.(app|dev)$/.test(hostname)
+  ) {
+    return false;
+  }
+  return true;
+};
 
 export function useServiceWorker(): SwState {
   const [online, setOnline] = useState(true);
@@ -44,7 +61,11 @@ export function useServiceWorker(): SwState {
   }, []);
 
   useEffect(() => {
-    if (!shouldRegister()) return;
+    if (!shouldRegister()) {
+      // Proactively unregister any active or leftover service workers in preview/dev
+      void unregisterAll();
+      return;
+    }
     let cancelled = false;
 
     void navigator.serviceWorker

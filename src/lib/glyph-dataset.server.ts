@@ -1,27 +1,13 @@
 /** Server-side access to the labelled-glyph dataset and its honest evaluation. */
 
-import { createClient } from "@supabase/supabase-js";
-
-import type { Database } from "@/integrations/supabase/types";
+import { supabase } from "@/integrations/supabase/client";
 import type { DatasetStats, Exemplar } from "@/lib/glyph-model";
 
 export const SCRIPTS = ["thamudic", "dadanitic", "nabataean", "other"] as const;
 export type ScriptKey = (typeof SCRIPTS)[number];
 
 export function publicClient() {
-  const key = process.env["SUPABASE_PUBLISHABLE_KEY"] ?? process.env["SUPABASE_ANON_KEY"]!;
-  return createClient<Database>(process.env["SUPABASE_URL"]!, key, {
-    auth: { persistSession: false },
-    global: {
-      fetch: (input, init) => {
-        const h = new Headers(init?.headers);
-        if (key.startsWith("sb_") && h.get("Authorization") === `Bearer ${key}`)
-          h.delete("Authorization");
-        h.set("apikey", key);
-        return fetch(input, { ...init, headers: h });
-      },
-    },
-  });
+  return supabase;
 }
 
 export async function approvedExemplars(script: string): Promise<Exemplar[]> {

@@ -6,7 +6,9 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Loader2, UserPlus } from "lucide-react";
+import { KeyRound, Loader2, Sparkles, Trash2, UserPlus } from "lucide-react";
+import { toast } from "sonner";
+import { createAccessCode } from "@/lib/hybrid-access";
 
 import {
   cancelInvite,
@@ -21,6 +23,15 @@ import {
   type UserRow,
 } from "@/lib/access-client";
 
+export type LocalAccessCode = {
+  id: string;
+  code: string;
+  recipient: string;
+  uses: number;
+  days: number;
+  created_at: string;
+};
+
 const STATUS_LABEL: Record<string, string> = {
   pending: "Pending approval",
   approved: "Active",
@@ -29,6 +40,22 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export function AccessManagement() {
+  const [recipientInput, setRecipientInput] = useState("");
+  const [usesCount, setUsesCount] = useState(1);
+  const [daysCount, setDaysCount] = useState(30);
+  const [accessCodes, setAccessCodes] = useState<LocalAccessCode[]>([]);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("athar_access_codes");
+      if (stored) {
+        setAccessCodes(JSON.parse(stored));
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [audit, setAudit] = useState<AuditRow[]>([]);
@@ -41,6 +68,34 @@ export function AccessManagement() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // دالة توليد المفاتيح الميدانية (هجين: سحابياً إن كان متصلاً أو محلياً)
+  const handleCreateCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const res = await createAccessCode({
+      recipient: recipientInput,
+      uses: usesCount,
+      days: daysCount,
+    });
+
+    const updated = JSON.parse(localStorage.getItem("athar_access_codes") || "[]");
+    setAccessCodes(updated);
+
+    if (res.mode === "cloud") {
+      toast.success(`تم إنشاء المفتاح سحابياً بنجاح: ${res.code}`);
+    } else {
+      toast.success(`تم إنشاء المفتاح بنجاح: ${res.code}`);
+    }
+    setRecipientInput("");
+  };
+
+  const handleDeleteLocalCode = (id: string) => {
+    const updated = accessCodes.filter((c) => c.id !== id);
+    localStorage.setItem("athar_access_codes", JSON.stringify(updated));
+    setAccessCodes(updated);
+    toast.success("تم حذف المفتاح بنجاح");
+  };
 
   const load = useCallback(async () => {
     const res = await loadAccess();
@@ -114,6 +169,81 @@ export function AccessManagement() {
       </div>
 
       {loading && <Loader2 className="size-5 animate-spin text-muted-foreground" />}
+
+      <div className="panel p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="flex items-center gap-2 font-bold text-amber-500">
+              <Sparkles className="size-4" /> المفاتيح الميدانية السريعة (توليد محلي فوري)
+            </h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              توليد مفاتيح بصيغة ATHAR-XXXX محلياً بدون الحاجة لتسجيل دخول أو الاتصال بالخادم، وتعمل
+              فوراً للممارسين الميدانيين.
+            </p>
+          </div>
+        </div>
+        <form
+          className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]"
+          onSubmit={handleCreateCode}
+        >
+          <input
+            value={recipientInput}
+            onChange={(e) => setRecipientInput(e.target.value)}
+            placeholder="اسم المستلم / الممارس الميداني (اختياري)"
+            className="min-h-11 rounded-lg border border-input bg-background px-3"
+          />
+          <label className="grid text-xs text-muted-foreground">
+            مرات الاستخدام
+            <input
+              type="number"
+              min={1}
+              max={500}
+              value={usesCount}
+              onChange={(e) => setUsesCount(Number(e.target.value))}
+              className="min-h-11 w-24 rounded-lg border border-input bg-background px-3"
+            />
+          </label>
+          <label className="grid text-xs text-muted-foreground">
+            الصلاحية (أيام)
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={daysCount}
+              onChange={(e) => setDaysCount(Number(e.target.value))}
+              className="min-h-11 w-24 rounded-lg border border-input bg-background px-3"
+            />
+          </label>
+          <button
+            type="submit"
+            className="flex min-h-11 items-center justify-center gap-2 self-end rounded-lg bg-amber-600 px-4 font-semibold text-white hover:bg-amber-700"
+          >
+            <KeyRound className="size-4" /> توليد المفتاح
+          </button>
+        </form>
+        <div className="mt-3 grid gap-2">
+          {accessCodes.length === 0 && <Empty>لا توجد مفاتيح ميدانية محلية بعد.</Empty>}
+          {accessCodes.map((c) => (
+            <Row
+              key={c.id}
+              title={c.code}
+              sub={`${c.recipient} · ${c.uses} استخدام · ${c.days} يوم · أُنشئ ${new Date(c.created_at).toLocaleDateString()}`}
+            >
+              <Action
+                onClick={() => {
+                  void navigator.clipboard?.writeText(c.code);
+                  toast.success(`تم نسخ المفتاح: ${c.code}`);
+                }}
+              >
+                نسخ
+              </Action>
+              <Action tone="danger" onClick={() => handleDeleteLocalCode(c.id)}>
+                حذف
+              </Action>
+            </Row>
+          ))}
+        </div>
+      </div>
 
       <div className="panel p-4">
         <h3 className="font-bold">Access Codes</h3>

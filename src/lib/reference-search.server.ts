@@ -1,8 +1,6 @@
 /** Server-side retrieval of published inscriptions that resemble a reading. */
 
-import { createClient } from "@supabase/supabase-js";
-
-import type { Database } from "@/integrations/supabase/types";
+import { supabase } from "@/integrations/supabase/client";
 import { plainForm } from "@/lib/reference-import.server";
 
 export type Parallel = {
@@ -18,19 +16,7 @@ export type Parallel = {
 };
 
 function publicClient() {
-  const key = process.env["SUPABASE_PUBLISHABLE_KEY"]!;
-  return createClient<Database>(process.env["SUPABASE_URL"]!, key, {
-    auth: { persistSession: false },
-    global: {
-      fetch: (input, init) => {
-        const h = new Headers(init?.headers);
-        if (key.startsWith("sb_") && h.get("Authorization") === `Bearer ${key}`)
-          h.delete("Authorization");
-        h.set("apikey", key);
-        return fetch(input, { ...init, headers: h });
-      },
-    },
-  });
+  return supabase;
 }
 
 /** Maps the app's script choice to the script labels used in the corpus. */

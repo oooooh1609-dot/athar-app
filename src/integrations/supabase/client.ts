@@ -30,6 +30,83 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
   };
 }
 
+function isValidHttpUrl(url?: string | null): boolean {
+  if (!url || typeof url !== "string") return false;
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isPlaceholder(url?: string | null, key?: string | null): boolean {
+  if (!url || !key) return true;
+  if (!isValidHttpUrl(url)) return true;
+  if (url.includes("placeholder.supabase.co")) return true;
+  if (key === "dummy-key" || key === "placeholder-key" || key === "dummy-service-key") {
+    return true;
+  }
+  return false;
+}
+
+function createMockClient() {
+  const mockQueryBuilder = () => {
+    const builder = {
+      select: () => builder,
+      insert: async () => ({ data: null, error: null }),
+      update: async () => ({ data: null, error: null }),
+      delete: async () => ({ data: null, error: null }),
+      upsert: async () => ({ data: null, error: null }),
+      eq: () => builder,
+      neq: () => builder,
+      gt: () => builder,
+      lt: () => builder,
+      gte: () => builder,
+      lte: () => builder,
+      like: () => builder,
+      ilike: () => builder,
+      is: () => builder,
+      in: () => builder,
+      order: () => builder,
+      limit: () => builder,
+      range: () => builder,
+      single: async () => ({ data: null, error: null }),
+      maybeSingle: async () => ({ data: null, error: null }),
+      then: (onfulfilled?: (value: unknown) => unknown) =>
+        Promise.resolve({ data: [], error: null }).then(onfulfilled),
+    };
+    return builder;
+  };
+
+  return {
+    auth: {
+      getSession: async () => ({ data: { session: null }, error: null }),
+      getUser: async () => ({ data: { user: null }, error: null }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+      signInWithPassword: async () => ({ data: { user: null }, error: null }),
+      signUp: async () => ({ data: { user: null }, error: null }),
+      signOut: async () => ({ error: null }),
+      updateUser: async () => ({ data: { user: null }, error: null }),
+      resetPasswordForEmail: async () => ({ data: null, error: null }),
+    },
+    from: () => mockQueryBuilder(),
+    channel: () => ({
+      on: () => ({ subscribe: () => ({ unsubscribe: () => {} }) }),
+      subscribe: () => ({ unsubscribe: () => {} }),
+    }),
+    storage: {
+      from: () => ({
+        upload: async () => ({ data: null, error: null }),
+        download: async () => ({ data: null, error: null }),
+        getPublicUrl: () => ({ data: { publicUrl: "" } }),
+      }),
+    },
+  } as unknown as ReturnType<typeof createClient<Database>>;
+}
+
 function createSupabaseClient() {
   // Use import.meta.env for client-side (Vite build-time replacement)
   // Fall back to process.env for SSR (server-side rendering)
@@ -38,30 +115,32 @@ function createSupabaseClient() {
     import.meta.env["VITE_SUPABASE_PUBLISHABLE_KEY"] || process.env["SUPABASE_PUBLISHABLE_KEY"];
 
   const fallbackUrl = "https://placeholder.supabase.co";
-  const fallbackKey = "placeholder-key";
-  const effectiveUrl = SUPABASE_URL || fallbackUrl;
+  const fallbackKey = "dummy-key";
+  const effectiveUrl = (isValidHttpUrl(SUPABASE_URL) ? SUPABASE_URL : fallbackUrl) as string;
   const effectiveKey = SUPABASE_PUBLISHABLE_KEY || fallbackKey;
 
-  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
-    const missing = [
-      ...(!SUPABASE_URL ? ["SUPABASE_URL"] : []),
-      ...(!SUPABASE_PUBLISHABLE_KEY ? ["SUPABASE_PUBLISHABLE_KEY"] : []),
-    ];
-    console.warn(
-      `[Supabase] Missing Supabase environment variable(s): ${missing.join(", ")}. Using offline fallback client.`,
+  if (isPlaceholder(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)) {
+    console.info(
+      "[Supabase] Running with safe offline/fallback mock client to keep preview active.",
     );
+    return createMockClient();
   }
 
-  return createClient<Database>(effectiveUrl, effectiveKey, {
-    global: {
-      fetch: createSupabaseFetch(effectiveKey),
-    },
-    auth: {
-      storage: brokeredPreviewStorage(),
-      persistSession: true,
-      autoRefreshToken: true,
-    },
-  });
+  try {
+    return createClient<Database>(effectiveUrl, effectiveKey, {
+      global: {
+        fetch: createSupabaseFetch(effectiveKey),
+      },
+      auth: {
+        storage: brokeredPreviewStorage(),
+        persistSession: true,
+        autoRefreshToken: true,
+      },
+    });
+  } catch (err) {
+    console.warn("[Supabase] Failed to initialize client with provided credentials:", err);
+    return createMockClient();
+  }
 }
 
 let _supabase: ReturnType<typeof createSupabaseClient> | undefined;

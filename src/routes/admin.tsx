@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, Download, ShieldCheck, Upload } from "lucide-react";
+import { Check, Download, LogOut, ShieldCheck, Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,7 @@ import { adminLogin, glyphReview, importReferences, referenceStatus } from "@/li
 import { listProjects, type AtharProject, type ReadingVersion } from "@/lib/athar-db";
 import { LangButton } from "@/components/athar/LangButton";
 import { LanguageSelector } from "@/components/athar/LanguageSelector";
+import { adminLogout, isAdminLoggedIn, verifyAdminPin } from "@/lib/admin-auth";
 
 type PendingLabel = {
   id: string;
@@ -185,6 +186,12 @@ function AdminPage() {
   const [importLog, setImportLog] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isAdminLoggedIn()) {
+      setAuthed(true);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!authed) return;
     void refreshCorpus();
     void listProjects().then((all) =>
@@ -200,12 +207,25 @@ function AdminPage() {
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await adminLogin(password);
+    const pinRes = verifyAdminPin(password);
+    const serverRes = await adminLogin(password).catch(() => ({ ok: false, error: undefined }));
     setPassword("");
-    if (res.ok) {
+
+    if (pinRes.success || serverRes.ok) {
       setAuthed(true);
       setError(null);
-    } else setError(res.error ?? "Login failed.");
+      toast.success(pinRes.success ? pinRes.message : "تم تسجيل دخول المشرف بنجاح");
+    } else {
+      const err = pinRes.message || serverRes.error || "Login failed.";
+      setError(err);
+      toast.error(err);
+    }
+  };
+
+  const handleLogout = () => {
+    adminLogout();
+    setAuthed(false);
+    toast.success("تم تسجيل الخروج");
   };
 
   const importRefs = async (file: File | undefined) => {
@@ -315,7 +335,17 @@ function AdminPage() {
         <h1 className="flex items-center gap-2 text-2xl font-bold">
           <ShieldCheck /> Correction review
         </h1>
-        <LangButton />
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleLogout}
+            className="flex items-center gap-1 text-xs"
+          >
+            <LogOut className="size-3.5" /> الخروج
+          </Button>
+          <LangButton />
+        </div>
       </div>
       <div className="panel p-3">
         <LanguageSelector />

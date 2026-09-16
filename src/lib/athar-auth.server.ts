@@ -8,6 +8,9 @@
  * - Failed attempts are rate limited per client with a temporary cooldown.
  */
 
+import fs from "node:fs";
+import path from "node:path";
+
 const enc = new TextEncoder();
 
 export const SESSION_COOKIE = "athar_session";
@@ -39,6 +42,22 @@ async function pbkdf2(pin: string, saltHex: string, iterations: number) {
   return hex(bits);
 }
 
+function getStoredPinHash(): string | undefined {
+  try {
+    const envPath = path.resolve(process.cwd(), ".env");
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, "utf-8");
+      const match = content.match(/^ATHAR_PIN_HASH\s*=\s*(.*)$/m);
+      if (match && match[1]) {
+        return match[1].trim().replace(/^['"]|['"]$/g, "");
+      }
+    }
+  } catch {
+    return process.env["ATHAR_PIN_HASH"];
+  }
+  return process.env["ATHAR_PIN_HASH"];
+}
+
 /**
  * Verifies a submitted PIN against the stored hash. Never logs the PIN.
  *
@@ -47,16 +66,16 @@ async function pbkdf2(pin: string, saltHex: string, iterations: number) {
  * simply closed and the access-code / account routes remain the way in.
  */
 export async function verifyPin(pin: string): Promise<boolean> {
-  const stored = process.env["ATHAR_PIN_HASH"];
+  const stored = getStoredPinHash();
   if (!stored) return false;
   if (!stored.startsWith("pbkdf2$")) {
-    return stored === pin;
+    return stored === pin.trim();
   }
   const [scheme, itStr, salt, digest] = stored.split("$");
   if (scheme !== "pbkdf2" || !itStr || !salt || !digest) return false;
   const iterations = Number(itStr);
   if (!Number.isInteger(iterations) || iterations < 1000 || iterations > 1_000_000) return false;
-  const computed = await pbkdf2(pin, salt, iterations);
+  const computed = await pbkdf2(pin.trim(), salt, iterations);
   return timingSafeEqualHex(computed, digest);
 }
 
@@ -110,9 +129,22 @@ function signingKey() {
   );
 }
 
-const b64u = (s: string) => btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const b64u = (s: string) =>
+  typeof Buffer !== "undefined"
+    ? Buffer.from(s, "utf-8").toString("base64url")
+    : btoa(unescape(encodeURIComponent(s)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+
 const unb64u = (s: string) =>
-  atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4));
+  typeof Buffer !== "undefined"
+    ? Buffer.from(s, "base64url").toString("utf-8")
+    : decodeURIComponent(
+        escape(
+          atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4)),
+        ),
+      );
 
 async function sign(payload: string) {
   const sig = await crypto.subtle.sign("HMAC", await signingKey(), enc.encode(payload));

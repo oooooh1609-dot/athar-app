@@ -49,6 +49,28 @@ function chooseStrategy(url, mode, method, origin) {
   if (method !== "GET") return "passthrough";
   if (FONT_HOSTS.has(url.hostname)) return "font";
   if (url.origin !== origin) return "passthrough";
+  // Never intercept dev / Vite / module scripts or hot-reload assets
+  if (
+    url.pathname.startsWith("/@") ||
+    url.pathname.startsWith("/src/") ||
+    url.pathname.startsWith("/node_modules/") ||
+    url.pathname.includes("virtual:") ||
+    url.searchParams.has("t") ||
+    url.searchParams.has("import") ||
+    url.searchParams.has("tsr-split")
+  ) {
+    return "passthrough";
+  }
+  // If running in development, Cloud Run preview, or AI Studio sandboxes, pass through
+  if (
+    url.hostname.endsWith(".run.app") ||
+    url.hostname.includes("ai.studio") ||
+    url.hostname === "localhost" ||
+    url.hostname === "127.0.0.1" ||
+    /\.lovable(project)?\.(app|dev)$/.test(url.hostname)
+  ) {
+    return "passthrough";
+  }
   // Nothing under /api/ is ever cached: a stale reading, job status or
   // permission check is worse than an honest network failure.
   if (url.pathname.startsWith("/api/")) return "network-only";
@@ -59,6 +81,16 @@ function chooseStrategy(url, mode, method, origin) {
 }
 
 self.addEventListener("install", (event) => {
+  const isDevOrSandbox =
+    self.location.hostname.endsWith(".run.app") ||
+    self.location.hostname.includes("ai.studio") ||
+    self.location.hostname === "localhost" ||
+    self.location.hostname === "127.0.0.1" ||
+    /\.lovable(project)?\.(app|dev)$/.test(self.location.hostname);
+  if (isDevOrSandbox) {
+    self.skipWaiting();
+    return;
+  }
   event.waitUntil(
     (async () => {
       const cache = await caches.open(SHELL);
@@ -74,6 +106,18 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
+      const isDevOrSandbox =
+        self.location.hostname.endsWith(".run.app") ||
+        self.location.hostname.includes("ai.studio") ||
+        self.location.hostname === "localhost" ||
+        self.location.hostname === "127.0.0.1" ||
+        /\.lovable(project)?\.(app|dev)$/.test(self.location.hostname);
+      if (isDevOrSandbox) {
+        const names = await caches.keys();
+        await Promise.all(names.map((n) => caches.delete(n)));
+        await self.registration.unregister();
+        return;
+      }
       const names = await caches.keys();
       await Promise.all(names.filter((n) => !KEEP.has(n)).map((n) => caches.delete(n)));
       if (self.registration.navigationPreload) {
@@ -87,6 +131,11 @@ self.addEventListener("activate", (event) => {
 /** The page asks for the update; the worker does not force it. */
 self.addEventListener("message", (event) => {
   if (event.data === "athar:skip-waiting") void self.skipWaiting();
+  if (event.data === "athar:unregister") {
+    void self.registration.unregister().then(() => {
+      return caches.keys().then((names) => Promise.all(names.map((n) => caches.delete(n))));
+    });
+  }
 });
 
 const isCacheable = (res) => res && res.status === 200 && res.type !== "opaque";

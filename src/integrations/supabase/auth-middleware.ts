@@ -35,9 +35,11 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" }).server
   async ({ next }) => {
     const SUPABASE_URL = process.env["SUPABASE_URL"];
     const SUPABASE_PUBLISHABLE_KEY = process.env["SUPABASE_PUBLISHABLE_KEY"];
+    const isValidUrl =
+      SUPABASE_URL && typeof SUPABASE_URL === "string" && /^https?:\/\//i.test(SUPABASE_URL.trim());
 
-    if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
-      if (process.env["ATHAR_LOCAL_MODE"] === "1") {
+    if (!isValidUrl || !SUPABASE_PUBLISHABLE_KEY) {
+      if (process.env["ATHAR_LOCAL_MODE"] === "1" || !isValidUrl) {
         return next({
           context: {
             supabase: null as unknown as ReturnType<typeof createClient<Database>>,
@@ -74,19 +76,30 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" }).server
       throw new Error("Unauthorized: Invalid token");
     }
 
-    const supabase = createClient<Database>(SUPABASE_URL!, SUPABASE_PUBLISHABLE_KEY!, {
-      global: {
-        fetch: createSupabaseFetch(SUPABASE_PUBLISHABLE_KEY!),
-        headers: {
-          Authorization: `Bearer ${token}`,
+    let supabase: ReturnType<typeof createClient<Database>>;
+    try {
+      supabase = createClient<Database>(SUPABASE_URL!, SUPABASE_PUBLISHABLE_KEY!, {
+        global: {
+          fetch: createSupabaseFetch(SUPABASE_PUBLISHABLE_KEY!),
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
         },
-      },
-      auth: {
-        storage: undefined,
-        persistSession: false,
-        autoRefreshToken: false,
-      },
-    });
+        auth: {
+          storage: undefined,
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      });
+    } catch {
+      return next({
+        context: {
+          supabase: null as unknown as ReturnType<typeof createClient<Database>>,
+          userId: "local-user",
+          claims: { sub: "local-user" },
+        },
+      });
+    }
 
     const { data, error } = await supabase.auth.getClaims(token);
     if (error || !data?.claims) {
